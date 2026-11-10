@@ -1,0 +1,1 @@
+"""SAMT Desktop application package."""
