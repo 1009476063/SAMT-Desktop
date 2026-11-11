@@ -75,7 +75,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd dist
-          ditto -c -k --sequesterDir --keepParent SAMT-Desktop ${{ matrix.artifact }}.zip
+          ditto -c -k --keepParent SAMT-Desktop ${{ matrix.artifact }}.zip
 
       - name: Stage artifact (Windows)
         if: runner.os == 'Windows'
