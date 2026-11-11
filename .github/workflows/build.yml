@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             artifact: SAMT-Desktop-macOS-arm64
           - os: windows-2025
             artifact: SAMT-Desktop-Windows-x64
@@ -37,7 +37,11 @@ jobs:
           gh release download checkpoints-v1 --repo "$GITHUB_REPOSITORY" \
             --pattern "SAMT-checkpoints.zip" --output "$RUNNER_TEMP/ckpt.zip"
           mkdir -p app/models
-          tar -xf "$RUNNER_TEMP/ckpt.zip" -C app/models
+          python - <<'PY'
+          import zipfile, os
+          with zipfile.ZipFile(os.path.join(os.environ["RUNNER_TEMP"], "ckpt.zip")) as z:
+              z.extractall("app/models")
+          PY
           ls app/models | wc -l
 
       - name: Install dependencies (macOS)
