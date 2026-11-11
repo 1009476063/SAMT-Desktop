@@ -36,13 +36,15 @@ jobs:
         run: |
           gh release download checkpoints-v1 --repo "$GITHUB_REPOSITORY" \
             --pattern "SAMT-checkpoints.zip" --output "$RUNNER_TEMP/ckpt.zip"
-          mkdir -p app/models
+          # The archive stores paths relative to the repo root (app/models/...,
+          # app/core/...), so extract at the checkout root.
           python - <<'PY'
           import zipfile, os
           with zipfile.ZipFile(os.path.join(os.environ["RUNNER_TEMP"], "ckpt.zip")) as z:
-              z.extractall("app/models")
+              z.extractall(".")
           PY
-          ls app/models | wc -l
+          ls app/models/*.pth | wc -l
+          test -f app/core/samt_core/Networks/resnet_18_23dataset.pth
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
