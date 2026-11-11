@@ -23,7 +23,16 @@ from core.engine import (  # noqa: E402
 
 
 APP_DIR = Path(__file__).resolve().parent.parent
-BUNDLED_MODELS = APP_DIR / "models"
+
+
+def _bundled_models_dir() -> Path:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and (Path(meipass) / "models").is_dir():
+        return Path(meipass) / "models"
+    return APP_DIR / "models"
+
+
+BUNDLED_MODELS = _bundled_models_dir()
 
 
 class DisclaimerDialog(QDialog):

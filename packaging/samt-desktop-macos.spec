@@ -1,21 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
-PROJECT = Path(SPECPATH)
+PROJECT = Path(SPECPATH).resolve().parent
 APP = PROJECT / "app"
+CORE = APP / "core" / "samt_core"
 
 a = Analysis(
     [str(APP / "main.py")],
-    pathex=[str(APP)],
+    pathex=[str(APP), str(CORE)],
     binaries=[],
     datas=[
         (str(APP / "locales"), "locales"),
+        (str(APP / "models"), "models"),
         (str(APP / "core" / "samt_core" / "Networks" / "resnet_18_23dataset.pth"),
          "core/samt_core/Networks"),
     ],
     hiddenimports=[
         "monai", "monai.transforms", "monai.data",
         "pretrainedmodels", "SimpleITK", "skimage", "openpyxl", "six",
+        # samt_core's flat imports (from Nii_utils import ...) resolve as
+        # top-level modules at runtime via sys.path injection, so they must
+        # be collected as top-level modules too.
+        "Nii_utils", "utils", "dataset", "ResNet_3D", "Multimodal_Fusion_Network",
     ],
     excludes=["tkinter", "PyQt5", "IPython"],
     noarchive=False,
