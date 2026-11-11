@@ -100,7 +100,44 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Split oversized release assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name '*.zip' -print0 | while IFS= read -r -d '' src; do
+            name="$(basename "$src")"
+            size="$(stat -c%s "$src")"
+            if [ "$size" -lt 2147483648 ]; then
+              cp "$src" "release-assets/$name"
+              echo "single: $name ($size bytes)"
+            else
+              split -b 1500M -d -a 2 "$src" "release-assets/$name.part"
+              echo "split: $name ($size bytes)"
+              ls -lh "release-assets/$name.part"*
+            fi
+          done
+          cat > release-assets/README-ASSETS.txt <<'TXT'
+          SAMT Desktop release assets
+
+          Files ending in .partNN are 1500 MiB split parts of one ZIP archive.
+          Rejoin them before unzipping.
+
+          macOS / Linux:
+            cat SAMT-Desktop-Windows-x64.zip.part* > SAMT-Desktop-Windows-x64.zip
+
+          Windows PowerShell:
+            $parts = Get-ChildItem -File SAMT-Desktop-Windows-x64.zip.part* | Sort-Object Name
+            $out = [System.IO.File]::Create('SAMT-Desktop-Windows-x64.zip')
+            foreach ($part in $parts) {
+              $in = [System.IO.File]::OpenRead($part.FullName)
+              $in.CopyTo($out)
+              $in.Dispose()
+            }
+            $out.Dispose()
+          TXT
+
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.zip
+          files: release-assets/*
