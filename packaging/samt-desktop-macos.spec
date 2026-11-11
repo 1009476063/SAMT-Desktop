@@ -54,7 +54,7 @@ app = BUNDLE(
     name="SAMT-Desktop.app",
     icon=None,
     bundle_identifier="com.samt.desktop.research",
-    version="1.1.0",
+    version="1.1.1",
     info_plist={
         "CFBundleName": "SAMT Desktop",
         "CFBundleDisplayName": "SAMT Desktop",

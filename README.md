@@ -4,12 +4,13 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
-## v1.1.0
+## v1.1.1
 
+- This patch fixes a Windows-only staging-path assertion in CI. Runtime code, preprocessing, and probability arithmetic are unchanged.
 - Startup shows the main window first, then presents an always-on-top research-use disclaimer. Heavy PyTorch/MONAI imports and checkpoint preparation run in a worker thread.
 - A reorganized research workbench provides single-case input, batch validation, a 10-checkpoint result table, runtime controls, and method documentation in Chinese and English.
 - CPU is the exact-reference backend. CUDA/MPS are opt-in, probed for the vendored 3D operators, and fall back to CPU when unsupported.
-- The original `Dataset_img_clinical` preprocessing, four-modality network, and arithmetic mean of 10 fold probabilities are preserved. Version 1.1.0 was compared against the original `infer.py --scan_all` on the bundled `case1`: ensemble `P(neg)=0.4910087086`, `P(pos)=0.5089913145`.
+- The original `Dataset_img_clinical` preprocessing, four-modality network, and arithmetic mean of 10 fold probabilities are preserved. The v1.1.0 comparison against the original `infer.py --scan_all` remains the reference for v1.1.1 on the bundled `case1`: ensemble `P(neg)=0.4910087086`, `P(pos)=0.5089913145`.
 
 ## Layout
 

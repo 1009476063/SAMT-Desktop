@@ -76,7 +76,7 @@ def test_staging_only_links_four_model_inputs(tmp_path):
     engine._scratch.mkdir()
     root = engine.stage_cases([case])
     staged = sorted(
-        str(p.relative_to(root / "MRMG")) for p in
+        p.relative_to(root / "MRMG").as_posix() for p in
         (root / "MRMG").rglob("*.nii.gz")
     )
     assert staged == [

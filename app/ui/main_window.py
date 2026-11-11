@@ -27,6 +27,7 @@ from core.engine import (  # noqa: E402
 from ui.theme import COLORS  # noqa: E402
 
 
+# Disclaimer text is unchanged from 1.1.0; keep acceptance state across patch.
 DISCLAIMER_VERSION = "1.1.0"
 
 
