@@ -25,8 +25,11 @@ DEFAULTS = {
     "language": "",  # "" = follow system
     "disclaimer_accepted": False,
     "models_dir": "",  # empty = bundled models dir
+    "device": "cpu",  # CPU is the exact-reproduction reference
+    "low_memory": False,
     "last_data_dir": "",
     "last_export_dir": "",
+    "accepted_disclaimer_version": "",
 }
 
 

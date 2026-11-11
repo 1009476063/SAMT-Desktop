@@ -40,3 +40,9 @@ The structured clinical/pathology table (Sheet1) supplying 55 encoded features. 
 
 ## Research use
 The scope boundary of the entire application: no clinical decision support, no diagnostic claim. Enforced by the startup disclaimer.
+
+## Reference backend
+The CPU compute path used for exact numerical comparison with the experiment. CUDA and MPS are optional accelerators; their kernels may change last-digit probabilities.
+
+## Low-memory mode
+A runtime mode that rereads each fold checkpoint during inference instead of retaining all ten state dictionaries in memory. It does not change the ensemble or preprocessing.

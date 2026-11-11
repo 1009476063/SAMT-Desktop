@@ -7,11 +7,15 @@ its Dataset classes through generated single-case split pickles.
 from __future__ import annotations
 
 import glob
+import hashlib
 import os
 import pickle
 import shutil
 import sys
 import tempfile
+import threading
+import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -22,8 +26,6 @@ import pandas as pd
 from .samt_core import _ensure_importable
 
 _ensure_importable()
-
-from .samt_core.dataset import Dataset_img_clinical
 
 
 TASK = "pathology_pretrain"
@@ -73,6 +75,15 @@ class ScanResult:
     fold_probs: dict[str, Optional[list[float]]]
 
 
+@dataclass
+class EngineStatus:
+    checkpoint_count: int
+    requested_device: str
+    active_device: str
+    load_seconds: float = 0.0
+    backend_note: str = ""
+
+
 def _core_dir() -> Path:
     return Path(__file__).resolve().parent / "samt_core"
 
@@ -80,6 +91,17 @@ def _core_dir() -> Path:
 def find_case_nifti(case_root: Path, pattern: str) -> Optional[Path]:
     hits = sorted(glob.glob(str(case_root / pattern)))
     return Path(hits[0]) if hits else None
+
+
+def checkpoint_fingerprint(paths: list[Path]) -> str:
+    """Stable identity for the shipped ensemble, without reading 1.7 GiB."""
+    digest = hashlib.sha256()
+    for path in paths:
+        stat = path.stat()
+        digest.update(path.name.encode("utf-8"))
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+    return digest.hexdigest()[:12]
 
 
 def validate_case(case: PatientCase) -> list[str]:
@@ -132,18 +154,60 @@ def discover_cases(data_root: Path) -> tuple[list[PatientCase], list[str]]:
 
 
 class InferenceEngine:
-    """Loads the 10 fold checkpoints once and scans staged cases."""
+    """Runs the 10 fold checkpoints through one shared network.
 
-    def __init__(self, models_dir: Path, device: Optional[str] = None):
+    All checkpoints use the same architecture. Loading each state_dict into a
+    single eval-mode model is mathematically identical to retaining ten model
+    instances, while avoiding nine extra backbone constructions. The retained
+    state dicts still account for most memory; low-memory mode rereads each
+    checkpoint at inference time instead.
+    """
+
+    def __init__(self, models_dir: Path, device: Optional[str] = None,
+                 on_status: Optional[Callable[[str], None]] = None,
+                 retain_checkpoints: bool = True):
         import torch
         self._torch_mod = torch
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = torch.device(device)
+        requested = device or self.default_device(torch)
+        if requested not in self.available_devices(torch):
+            requested = self.default_device(torch)
+        self.requested_device = requested
+        self.device = torch.device(requested)
+        self._on_status = on_status
+        self.retain_checkpoints = retain_checkpoints
         self.models_dir = Path(models_dir)
         self._ckpt_paths = self._discover_checkpoints()
-        self._nets: list = []
+        self.fingerprint = checkpoint_fingerprint(self._ckpt_paths)
+        self._checkpoint_states: dict[str, object] = {}
+        self._shared_net = None
+        self._nets_lock = threading.Lock()
+        self._load_seconds = 0.0
         self._scratch = Path(tempfile.mkdtemp(prefix="samt_desktop_"))
+        weakref.finalize(self, shutil.rmtree, str(self._scratch), True)
+        self._pretrain_path = _core_dir() / "Networks" / "resnet_18_23dataset.pth"
+        self._pretrain_state = None
+        self._pretrain_lock = threading.Lock()
+        self._backend_probe_error = ""
+
+    @staticmethod
+    def default_device(torch) -> str:
+        """CPU is the deterministic reference; accelerators are opt-in.
+
+        Backend kernels can change floating-point reduction order by a few ULPs.
+        Keeping CPU as default preserves the numerical behaviour of the
+        published experiment while CUDA/MPS remain available explicitly.
+        """
+        return "cpu"
+
+    @staticmethod
+    def available_devices(torch) -> list[str]:
+        devices = ["cpu"]
+        if torch.cuda.is_available():
+            devices.append("cuda")
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            devices.append("mps")
+        return devices
 
     # ---- checkpoints -------------------------------------------------
     def _discover_checkpoints(self) -> list[Path]:
@@ -151,8 +215,11 @@ class InferenceEngine:
         hits = sorted(self.models_dir.glob("pathology_pretrain_fold*_*.pth"))
         if hits:
             return hits
-        # Fallback: original training tree layout.
-        legacy = sorted(self.models_dir.glob("**/*.pth"))
+        # Fallback: original training tree layout. Exclude backbone weights.
+        legacy = sorted(
+            path for path in self.models_dir.glob("**/*.pth")
+            if path.name != "resnet_18_23dataset.pth"
+        )
         return legacy
 
     @property
@@ -160,46 +227,170 @@ class InferenceEngine:
         return len(self._ckpt_paths)
 
     def _build_networks(self):
-        if self._nets:
-            return self._nets
+        with self._nets_lock:
+            if self._shared_net is not None and self._checkpoint_states:
+                return self._checkpoint_states
+            torch = self.torch
+            from .samt_core.Multimodal_Fusion_Network import (
+                MFNet_img_pathology_transcat_l3m_orgTransformer_1,
+            )
+            from .samt_core import ResNet_3D
+            # The vendored backbone reads this checkpoint ten times. Patch the
+            # loader only for the tightly scoped construction loop; the loaded
+            # tensors and state_dict contents stay identical.
+            cached_pretrain = self._pretrain_state
+            real_load = torch.load
+            pretrain_path = str(self._pretrain_path)
+            pretrain_path_variants = {
+                pretrain_path,
+                str(self._pretrain_path.resolve()),
+            }
+
+            def cached_load(path, *args, **kwargs):
+                if str(path) in pretrain_path_variants:
+                    return cached_pretrain
+                return real_load(path, *args, **kwargs)
+
+            with self._pretrain_lock:
+                if cached_pretrain is None:
+                    cached_pretrain = real_load(pretrain_path, map_location="cpu")
+                    self._pretrain_state = cached_pretrain
+                ResNet_3D.torch.load = cached_load
+            try:
+                shared_net, states = self._construct_networks(torch,
+                    MFNet_img_pathology_transcat_l3m_orgTransformer_1,
+                    real_load)
+            finally:
+                ResNet_3D.torch.load = real_load
+            self._shared_net = shared_net
+            self._checkpoint_states = states
+            return self._checkpoint_states
+
+    def _construct_networks(self, torch, net_class, real_load):
+        net = net_class(n_classes=2, no_cuda=False, drop=0)
+        net.to(self.device)
+        net.eval()
+        states: dict[str, object] = {}
+        for index, ckpt in enumerate(self._ckpt_paths, 1):
+            state = real_load(str(ckpt), map_location="cpu")
+            if self.retain_checkpoints:
+                states[ckpt.name] = state
+            del state
+            if self._on_status:
+                self._on_status("checkpoint:{}:{}".format(index, len(self._ckpt_paths)))
+        if not self.retain_checkpoints:
+            states = {ckpt.name: ckpt for ckpt in self._ckpt_paths}
+        return net, states
+
+    def _checkpoints(self) -> tuple[object, dict[str, object]]:
+        states = self._build_networks()
+        if self._shared_net is None:
+            raise RuntimeError("model ensemble is not available")
+        return self._shared_net, states
+
+    def _predict_states(self, net, states, net_args,
+                        progress: Optional[Callable[[str], None]] = None):
         torch = self.torch
-        from .samt_core.Multimodal_Fusion_Network import (
-            MFNet_img_pathology_transcat_l3m_orgTransformer_1,
-        )
-        for ckpt in self._ckpt_paths:
-            net = MFNet_img_pathology_transcat_l3m_orgTransformer_1(
-                n_classes=2, no_cuda=False, drop=0)
-            state = torch.load(str(ckpt), map_location="cpu")
+        fold_probs: dict[str, Optional[list[float]]] = {}
+        prob_sum = np.zeros(2, dtype=np.float64)
+        for index, (name, state) in enumerate(states.items(), 1):
+            if not self.retain_checkpoints:
+                state = self.torch.load(str(state), map_location="cpu")
             net.load_state_dict(state)
-            net.to(self.device)
-            net.eval()
-            self._nets.append((ckpt.name, net))
-        return self._nets
+            if progress:
+                progress("fold:{}".format(name))
+            elif self._on_status:
+                self._on_status("fold:{}:{}".format(index, len(states)))
+            with torch.no_grad():
+                logits = net(*net_args)[-1]
+                prob = torch.softmax(logits, dim=1)[0].cpu().numpy()
+            fold_probs[name] = [float(prob[0]), float(prob[1])]
+            prob_sum += prob
+            if not self.retain_checkpoints:
+                del state
+        return fold_probs, prob_sum / max(len(states), 1)
+
+    def _probe_backend(self, net) -> bool:
+        """Exercise the vendored 3D path before committing to an accelerator."""
+        if self.device.type == "cpu":
+            return True
+        torch = self.torch
+        probe = [
+            torch.zeros((1, 2, 16, 32, 32), device=self.device),
+            torch.zeros((1, 2, 64, 64), device=self.device),
+            torch.zeros((1, 32), device=self.device),
+            torch.zeros((1, 23), device=self.device),
+        ]
+        try:
+            with torch.no_grad():
+                net(*probe)
+            return True
+        except Exception as exc:
+            self._backend_probe_error = str(exc)
+            return False
+        finally:
+            del probe
 
     # ---- staging -----------------------------------------------------
-    def stage_case(self, case: PatientCase, table_df: Optional[pd.DataFrame] = None) -> Path:
-        """Materialise a case into scratch in the dataset.py layout."""
-        case_scratch = self._scratch / case.case_id
-        case_scratch.mkdir(parents=True, exist_ok=True)
-        # dataset.py joins data_dir/MRMG/<label>/<ID>/...; MRMG level is required.
-        target = case_scratch / "MRMG" / case.label_dir / case.case_id
-        if target.exists():
-            shutil.rmtree(target)
+    @staticmethod
+    def _link_or_copy(source: Path, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        # MG is symlinked separately below; copy images first.
-        shutil.copytree(case.case_root, target,
-                        ignore=shutil.ignore_patterns("MG"))
-        mg_src = case.case_root / "MG"
-        if mg_src.is_dir():
-            shutil.copytree(mg_src, target / "MG")
-        # Write CP.xlsx with just this case (dataset.py reads Sheet1).
+        try:
+            os.link(source, target)
+        except OSError:
+            shutil.copy2(source, target)
+
+    def _stage_image(self, target: Path, case: PatientCase, kind: str) -> None:
+        patterns = {
+            "dce": ("{}_DCE_N4.nii*", "{}_DCE_N4.nii.gz", Path(".")),
+            "dce_decay": ("{}_DCE_decay1.nii*", "{}_DCE_decay1.nii.gz", Path(".")),
+            "mlo": ("*{}_*MLO.nii*", "{}_MG_MLO.nii.gz", Path("MG")),
+            "mlo_decay": ("*{}_*MLO_decay1.nii*", "{}_MLO_decay1.nii.gz", Path("MG")),
+        }
+        pattern, fallback_name, subdir = patterns[kind]
+        source = find_case_nifti(case.case_root / subdir, pattern.format(case.case_id))
+        if source is None:
+            raise FileNotFoundError("{}: {}".format(kind, case.case_id))
+        self._link_or_copy(source, target / subdir / fallback_name.format(case.case_id))
+
+    def stage_cases(self, cases: list[PatientCase],
+                    table_df: Optional[pd.DataFrame] = None) -> Path:
+        """Materialise one or more cases in the dataset.py directory layout.
+
+        Only the four model inputs are staged; unrelated contours and raw
+        volumes are not copied. A single CP.xlsx is written for the batch so
+        repeated cases do not pay for redundant spreadsheet writes.
+        """
+        batch_root = self._scratch / "batch"
+        if batch_root.exists():
+            shutil.rmtree(batch_root)
+        batch_root.mkdir(parents=True)
+        for case in cases:
+            target = batch_root / "MRMG" / case.label_dir / case.case_id
+            target.mkdir(parents=True)
+            for kind in ("dce", "dce_decay", "mlo", "mlo_decay"):
+                self._stage_image(target, case, kind)
         if table_df is None:
-            table_df = pd.DataFrame([case.table_row])
-        table_df.to_excel(case_scratch / "CP.xlsx", sheet_name="Sheet1", index=False)
-        return case_scratch
+            rows = []
+            for case in cases:
+                row = dict(case.table_row)
+                row["ID"] = case.case_id
+                rows.append(row)
+            table_df = pd.DataFrame(rows)
+        else:
+            table_df = table_df.copy()
+        if "ID" in table_df.columns:
+            table_df["ID"] = table_df["ID"].astype(str)
+        table_df.to_excel(batch_root / "CP.xlsx", sheet_name="Sheet1", index=False)
+        return batch_root
+
+    def stage_case(self, case: PatientCase,
+                   table_df: Optional[pd.DataFrame] = None) -> Path:
+        return self.stage_cases([case], table_df)
 
     def _build_loader(self, staged_root: Path, case: PatientCase):
         from torch.utils.data import DataLoader
+        from .samt_core.dataset import Dataset_img_clinical
         split_path = staged_root / "single.pkl"
         split = {"test": [{"ID": case.case_id, "label": case.label_dir}]}
         with open(split_path, "wb") as fh:
@@ -214,30 +405,22 @@ class InferenceEngine:
         return self._torch_mod
 
     def infer_case(self, case: PatientCase, progress: Optional[Callable[[str], None]] = None) -> ScanResult:
-        torch = self.torch
-        nets = self._build_networks()
+        net, states = self._checkpoints()
         staged = self.stage_case(case)
         if progress:
-            progress("preprocess")
+            progress("preprocess:{}".format(case.case_id))
         loader = self._build_loader(staged, case)
         batch = next(iter(loader))
+        generated = getattr(loader.dataset, "df", None)
+        if generated is not None and "ID" in generated.columns:
+            case.table_row = generated.iloc[0].to_dict()
         # batch = (ID, img_MR_DCE, img_MG_MLO, clinical, pathology, label)
         net_args = [t.to(self.device).float() for t in batch[1:5]]
-        fold_probs: dict[str, Optional[list[float]]] = {}
-        prob_sum = np.zeros(2, dtype=np.float64)
-        ok = 0
-        for name, net in nets:
-            if progress:
-                progress("fold:{}".format(name))
-            with torch.no_grad():
-                logits = net(*net_args)[-1]
-                prob = torch.softmax(logits, dim=1)[0].cpu().numpy()
-            fold_probs[name] = [float(prob[0]), float(prob[1])]
-            prob_sum += prob
-            ok += 1
-        if ok == 0:
+        fold_probs, mean_prob = self._predict_states(
+            net, states, net_args, progress)
+        del net_args, loader, batch
+        if not states:
             raise RuntimeError("no checkpoint produced a prediction")
-        mean_prob = prob_sum / ok
         pred = "Positive" if int(np.argmax(mean_prob)) == 1 else "Negative"
         return ScanResult(case_id=case.case_id,
                           prob_neg=float(mean_prob[0]),
@@ -245,38 +428,116 @@ class InferenceEngine:
                           prediction=pred,
                           fold_probs=fold_probs)
 
+    def warm_up(self) -> None:
+        """Prepare the shared network ensemble before the first case is queued."""
+        started = time.perf_counter()
+        self._build_networks()
+        net = self._shared_net
+        if net is not None and not self._probe_backend(net):
+            if self.requested_device == "cpu":
+                raise RuntimeError("CPU backend probe failed")
+            # MPS 2.3 lacks max_pool3d; CUDA drivers can have similar gaps.
+            # Rebuilding on CPU keeps the exact research result available.
+            states = dict(self._checkpoint_states)
+            self._shared_net = None
+            self._checkpoint_states = {}
+            self.device = self.torch.device("cpu")
+            from .samt_core.Multimodal_Fusion_Network import (
+                MFNet_img_pathology_transcat_l3m_orgTransformer_1,
+            )
+            net = MFNet_img_pathology_transcat_l3m_orgTransformer_1(
+                n_classes=2, no_cuda=False, drop=0)
+            net.eval()
+            self._shared_net = net
+            self._checkpoint_states = states
+            if self._on_status:
+                self._on_status("fallback:cpu")
+        self._load_seconds = time.perf_counter() - started
+
+    def status(self) -> EngineStatus:
+        torch = self.torch
+        note = ""
+        if self.requested_device != "cpu":
+            note = "backend warning: probabilities may differ slightly"
+        if str(self.device) == "cpu" and self.requested_device != "cpu":
+            note = "backend fallback: CPU reference"
+        return EngineStatus(
+            checkpoint_count=self.checkpoint_count,
+            requested_device=self.requested_device,
+            active_device=str(self.device),
+            load_seconds=self._load_seconds,
+            backend_note=note,
+        )
+
+    @property
+    def backend_probe_error(self) -> str:
+        return self._backend_probe_error
+
     def infer_batch(self, cases: Iterable[PatientCase],
                     progress: Optional[Callable[[str, int, int], None]] = None) -> list[ScanResult]:
         cases = list(cases)
+        return self.infer_staged_batch(cases, progress=progress)
+
+    def infer_staged_batch(self, cases: list[PatientCase],
+                           progress: Optional[Callable[[str, int, int], None]] = None) -> list[ScanResult]:
+        """Reuse one CP.xlsx and the loaded ensemble across a batch."""
+        net, states = self._checkpoints()
+        staged_root = self.stage_cases(cases)
+        from .samt_core.dataset import Dataset_img_clinical
+        from torch.utils.data import DataLoader
+        split = {"test": [{"ID": c.case_id, "label": c.label_dir} for c in cases]}
+        split_path = staged_root / "batch.pkl"
+        with open(split_path, "wb") as fh:
+            pickle.dump(split, fh)
+        dataset = Dataset_img_clinical(
+            str(staged_root), str(split_path), data_set="test", augment=False)
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
         results = []
-        for i, case in enumerate(cases, 1):
-            result = self.infer_case(case, progress=None)
-            results.append(result)
+        for index, (case, batch) in enumerate(zip(cases, loader), 1):
             if progress:
-                progress(case.case_id, i, len(cases))
+                progress("preprocess:{}".format(case.case_id))
+            net_args = [t.to(self.device).float() for t in batch[1:5]]
+            fold_probs, mean_prob = self._predict_states(
+                net, states, net_args, progress)
+            pred = "Positive" if int(np.argmax(mean_prob)) == 1 else "Negative"
+            results.append(ScanResult(
+                case_id=case.case_id,
+                prob_neg=float(mean_prob[0]),
+                prob_pos=float(mean_prob[1]),
+                prediction=pred,
+                fold_probs=fold_probs,
+            ))
+            del net_args, batch
+            if progress:
+                progress("case:{}:{}:{}".format(case.case_id, index, len(cases)))
         return results
 
     def results_to_dataframe(self, results: list[ScanResult], labels: Optional[dict[str, str]] = None) -> pd.DataFrame:
-        rows = []
-        for r in results:
-            row = {
-                "ID": r.case_id,
-                "Label": (labels or {}).get(r.case_id, ""),
-                "P(Negative)": round(r.prob_neg, 6),
-                "P(Positive)": round(r.prob_pos, 6),
-                "Prediction": r.prediction,
-                "Ensemble_N": sum(v is not None for v in r.fold_probs.values()),
-            }
-            for name, probs in r.fold_probs.items():
-                if probs is not None:
-                    row["{}_P(neg)".format(name)] = round(probs[0], 6)
-                    row["{}_P(pos)".format(name)] = round(probs[1], 6)
-                else:
-                    row["{}_P(neg)".format(name)] = ""
-                    row["{}_P(pos)".format(name)] = ""
-            rows.append(row)
-        return pd.DataFrame(rows)
+        return scan_results_to_dataframe(results, labels)
 
     def cleanup(self):
         if self._scratch.exists():
             shutil.rmtree(self._scratch, ignore_errors=True)
+
+
+def scan_results_to_dataframe(results: list[ScanResult],
+                              labels: Optional[dict[str, str]] = None) -> pd.DataFrame:
+    rows = []
+    for r in results:
+        row = {
+            "ID": r.case_id,
+            "Label": (labels or {}).get(r.case_id, ""),
+            "P(Negative)": round(r.prob_neg, 6),
+            "P(Positive)": round(r.prob_pos, 6),
+            "Prediction": r.prediction,
+            "Ensemble_N": sum(v is not None for v in r.fold_probs.values()),
+        }
+        for name, probs in r.fold_probs.items():
+            if probs is not None:
+                row["{}_P(neg)".format(name)] = round(probs[0], 6)
+                row["{}_P(pos)".format(name)] = round(probs[1], 6)
+            else:
+                row["{}_P(neg)".format(name)] = ""
+                row["{}_P(pos)".format(name)] = ""
+        rows.append(row)
+    return pd.DataFrame(rows)
