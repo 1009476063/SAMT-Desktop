@@ -47,3 +47,20 @@ coll = COLLECT(
     upx=False,
     name="SAMT-Desktop",
 )
+
+app = BUNDLE(
+    coll,
+    name="SAMT-Desktop.app",
+    icon=None,
+    bundle_identifier="com.samt.desktop.research",
+    version="1.0.1",
+    info_plist={
+        "CFBundleName": "SAMT Desktop",
+        "CFBundleDisplayName": "SAMT Desktop",
+        "CFBundleExecutable": "SAMT-Desktop",
+        "CFBundlePackageType": "APPL",
+        "LSMinimumSystemVersion": "11.0",
+        "NSHighResolutionCapable": True,
+        "LSBackgroundOnly": False,
+    },
+)

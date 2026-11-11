@@ -75,7 +75,13 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd dist
-          ditto -c -k --keepParent SAMT-Desktop ${{ matrix.artifact }}.zip
+          test -d SAMT-Desktop.app/Contents/MacOS
+          test -f SAMT-Desktop.app/Contents/Info.plist
+          hdiutil create -volname "SAMT Desktop" \
+            -srcfolder SAMT-Desktop.app -ov -format UDZO \
+            SAMT-Desktop-macOS-arm64.dmg
+          ditto -c -k --keepParent SAMT-Desktop.app \
+            SAMT-Desktop-macOS-arm64-app.zip
 
       - name: Stage artifact (Windows)
         if: runner.os == 'Windows'
@@ -85,9 +91,17 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}.zip
+
+      - name: Upload macOS disk image
+        uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: SAMT-Desktop-macOS-arm64-dmg
+          path: dist/SAMT-Desktop-macOS-arm64.dmg
 
   release:
     needs: build
@@ -105,7 +119,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-assets
-          find artifacts -type f -name '*.zip' -print0 | while IFS= read -r -d '' src; do
+          find artifacts -type f \( -name '*.zip' -o -name '*.dmg' \) -print0 | while IFS= read -r -d '' src; do
             name="$(basename "$src")"
             size="$(stat -c%s "$src")"
             if [ "$size" -lt 2147483648 ]; then
