@@ -126,18 +126,34 @@ jobs:
 
       - name: Stage artifact (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: |
-          if (-not (Test-Path dist/SAMT-Desktop/_internal/PIL)) {
-            throw 'Pillow is required by torchvision during model construction'
-          }
-          if (-not (Test-Path dist/SAMT-Desktop/_internal/torchvision)) {
-            throw 'torchvision runtime is missing'
-          }
-          if (-not (Test-Path dist/SAMT-Desktop/_internal/models/samt-checkpoints.zip)) {
-            throw 'lossless checkpoint store is missing'
-          }
-          Compress-Archive -Path dist/SAMT-Desktop -DestinationPath dist/${{ matrix.artifact }}.zip
+          test -f dist/SAMT-Desktop/SAMT-Desktop.exe
+          test -d dist/SAMT-Desktop/_internal/PIL
+          test -d dist/SAMT-Desktop/_internal/torchvision
+          test -f dist/SAMT-Desktop/_internal/models/samt-checkpoints.zip
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          source = Path("dist/SAMT-Desktop")
+          target = Path("dist/${{ matrix.artifact }}.zip")
+          with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED,
+                               compresslevel=6, allowZip64=True) as archive:
+              for path in sorted(source.rglob("*")):
+                  relative = path.relative_to(source.parent).as_posix()
+                  archive.write(path, relative)
+          with zipfile.ZipFile(target) as archive:
+              names = archive.namelist()
+              assert names and all("\\" not in name for name in names)
+              assert "SAMT-Desktop/SAMT-Desktop.exe" in names
+              assert any(name.startswith("SAMT-Desktop/_internal/PIL/")
+                         for name in names)
+              assert any(name.startswith("SAMT-Desktop/_internal/torchvision/")
+                         for name in names)
+              assert "SAMT-Desktop/_internal/models/samt-checkpoints.zip" in names
+              assert archive.testzip() is None
+          PY
 
       - name: Publish macOS disk image
         if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
