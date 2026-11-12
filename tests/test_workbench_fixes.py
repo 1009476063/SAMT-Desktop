@@ -18,6 +18,7 @@ sys.path.insert(0, str(APP))
 def _offscreen_python(snippet: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
+    env["SAMT_PROJECT_ROOT"] = str(ROOT)
     return subprocess.run(
         [sys.executable, "-c", snippet], cwd=ROOT, env=env,
         text=True, capture_output=True, timeout=30,
@@ -40,10 +41,9 @@ def test_ui_shell_import_does_not_load_model_or_dataframe_stack():
 
 def test_rejected_consent_exits_before_main_window_and_event_loop():
     result = _offscreen_python(r'''
-import importlib.util, sys
+import importlib.util, os, sys
 from pathlib import Path
-ROOT = Path(__file__ if "__file__" in globals() else
-            "/Users/tanxiang/WorkBuddy/SAMT-Desktop")
+ROOT = Path(os.environ["SAMT_PROJECT_ROOT"])
 calls = []
 class QApplication:
     def __new__(cls, *args):
