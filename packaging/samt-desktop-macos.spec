@@ -24,7 +24,8 @@ a = Analysis(
         # be collected as top-level modules too.
         "Nii_utils", "utils", "dataset", "ResNet_3D", "Multimodal_Fusion_Network",
     ],
-    excludes=["tkinter", "PyQt5", "IPython"],
+    excludes=["tkinter", "PyQt5", "IPython", "matplotlib", "pydicom",
+              "sklearn", "PIL", "tensorboardX", "pytest"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -54,7 +55,7 @@ app = BUNDLE(
     name="SAMT-Desktop.app",
     icon=None,
     bundle_identifier="com.samt.desktop.research",
-    version="1.1.1",
+    version="1.2.0",
     info_plist={
         "CFBundleName": "SAMT Desktop",
         "CFBundleDisplayName": "SAMT Desktop",

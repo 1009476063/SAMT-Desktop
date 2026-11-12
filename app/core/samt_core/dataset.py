@@ -3,7 +3,6 @@ import pickle
 from Nii_utils import NiiDataRead, NiiDataRead_2D
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from monai.transforms import Compose, Rand2DElasticd, Rand3DElasticd, RandRotated, RandGaussianNoised, Rand3DElastic, RandFlipd, ToTensor
 import os
 from torch.utils.data import Dataset, DataLoader

@@ -12,22 +12,28 @@ def _source(name: str) -> str:
     return (APP / name).read_text("utf-8")
 
 
-def test_main_shows_window_before_startup_gate():
+def test_main_shows_gate_before_constructing_main_window():
     source = _source("main.py")
     tree = ast.parse(source)
     calls = [
         node.func.attr for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     ]
-    assert calls.index("show") < calls.index("start")
+    assert "MainWindow" in source
+    assert source.index("ResearchUseGate") < source.index("MainWindow()")
+    assert source.index("QDialog.Accepted") < source.index("MainWindow()")
+    assert source.index("window.show()") < calls.index("exec") * 10000
+    assert "return 0" in source
 
 
-def test_disclaimer_uses_foreground_and_deferred_display():
+def test_disclaimer_is_standalone_and_foreground():
     source = _source("ui/main_window.py")
-    assert "QTimer.singleShot(0, self._show_disclaimer_if_needed)" in source
+    assert "class ResearchUseGate(QDialog)" in source
     assert "WindowStaysOnTopHint" in source
     assert "activateWindow()" in source
     assert "self._force_foreground()" in source
+    assert "settings.save()" in source
+    assert "_show_disclaimer_if_needed" not in source
 
 
 def test_engine_is_outside_shell_import_chain():

@@ -63,6 +63,15 @@ jobs:
       - name: Run tests
         run: python -m pytest tests -x -q
 
+      - name: Build lossless checkpoint store
+        shell: bash
+        run: |
+          python scripts/build_checkpoint_store.py
+          python scripts/verify_checkpoint_store.py
+          mkdir -p "$RUNNER_TEMP/raw-checkpoints"
+          mv app/models/pathology_pretrain_fold*_*.pth "$RUNNER_TEMP/raw-checkpoints/"
+          test -f app/models/samt-checkpoints.zip
+
       - name: Build with PyInstaller (macOS)
         if: runner.os == 'macOS'
         run: pyinstaller packaging/samt-desktop-macos.spec --noconfirm

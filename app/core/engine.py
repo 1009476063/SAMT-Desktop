@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import os
 import pickle
 import shutil
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import weakref
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -104,6 +106,90 @@ def checkpoint_fingerprint(paths: list[Path]) -> str:
     return digest.hexdigest()[:12]
 
 
+def load_stored_checkpoint(path: Path, name: str) -> dict:
+    """Reconstruct one checkpoint state dict from a shared-tensor store."""
+    import torch
+    with zipfile.ZipFile(Path(path)) as archive:
+        names = set(archive.namelist())
+        if "manifest.json" not in names or "tensors.bin" not in names:
+            raise ValueError("invalid checkpoint store: {}".format(path))
+        manifest_bytes = archive.read("manifest.json")
+        tensor_bytes = archive.read("tensors.bin")
+        manifest = json.loads(manifest_bytes)
+        if hashlib.sha256(tensor_bytes).hexdigest() != manifest["tensor_sha256"]:
+            raise ValueError("checkpoint digest mismatch: {}".format(path))
+        if name not in manifest["state"]:
+            raise ValueError("checkpoint not in store: {}".format(name))
+        tensors = []
+        offset = 0
+        for item in manifest["blobs"]:
+            length = int(item["size"])
+            raw = tensor_bytes[offset:offset + length]
+            array = np.frombuffer(raw, dtype=np.dtype(item["dtype"]))
+            tensors.append(torch.from_numpy(array.copy()).reshape(
+                item["shape"]).clone())
+            offset += length
+        return {key: tensors[int(index)] for key, index in
+                manifest["state"][name].items()}
+
+
+def load_checkpoint_state(path: Path) -> object:
+    """Load one raw torch checkpoint; stores require an explicit fold name."""
+    import torch
+    path = Path(path)
+    if zipfile.is_zipfile(path):
+        raise ValueError("use load_stored_checkpoint for ensemble stores")
+    return torch.load(str(path), map_location="cpu")
+
+
+def build_checkpoint_store(paths: list[Path], target: Path) -> dict:
+    """Store each unique tensor's raw bytes once across all ten checkpoints."""
+    import torch
+    if len(paths) != 10:
+        raise ValueError("expected 10 fold checkpoints")
+    states = [torch.load(str(path), map_location="cpu") for path in paths]
+    blob_index: dict[tuple[str, bytes], int] = {}
+    blobs: list[bytes] = []
+    blob_meta: list[dict] = []
+    checkpoint_maps: dict[str, dict[str, int]] = {}
+    for path, state in zip(paths, states):
+        key_map: dict[str, int] = {}
+        for key, tensor in state.items():
+            if not torch.is_tensor(tensor):
+                raise ValueError("non-tensor state in {}".format(path.name))
+            raw = tensor.detach().cpu().numpy().tobytes()
+            identity = (str(tensor.dtype).replace("torch.", ""), raw)
+            index = blob_index.get(identity)
+            if index is None:
+                index = len(blobs)
+                blob_index[identity] = index
+                blobs.append(raw)
+                blob_meta.append({"dtype": identity[0],
+                                  "shape": list(tensor.shape),
+                                  "size": len(raw)})
+            key_map[key] = index
+        checkpoint_maps[path.name] = key_map
+    payload = b"".join(blobs)
+    manifest = {
+        "format": "samt-lossless-checkpoint-store-v1",
+        "tensor_sha256": hashlib.sha256(payload).hexdigest(),
+        "blobs": blob_meta,
+        "state": checkpoint_maps,
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("manifest.json", json.dumps(
+            manifest, ensure_ascii=False, separators=(",", ":")))
+        archive.writestr("tensors.bin", payload)
+    return {
+        "checkpoints": len(paths),
+        "raw_tensor_bytes": sum(t.numel() * t.element_size()
+                                for state in states for t in state.values()),
+        "unique_tensor_bytes": len(payload),
+        "unique_tensors": len(blobs),
+    }
+
+
 def validate_case(case: PatientCase) -> list[str]:
     """Return human-readable problems; empty list means the case is runnable."""
     problems = []
@@ -121,12 +207,26 @@ def validate_case(case: PatientCase) -> list[str]:
     return problems
 
 
-def discover_cases(data_root: Path) -> tuple[list[PatientCase], list[str]]:
-    """Scan an experiment-style tree: MRMG/<Label>/<ID> + CP.xlsx at root."""
+def resolve_experiment_root(path: Path) -> tuple[Path, str | None]:
+    """Accept a tree root, MRMG, a label dir, or one selected case dir."""
+    selected = Path(path).expanduser().resolve()
+    if not selected.is_dir():
+        return selected, None
+    for parent in (selected, *selected.parents):
+        if (parent / "MRMG").is_dir() and (parent / "CP.xlsx").is_file():
+            return parent, selected.name if selected != parent else None
+    return selected, None
+
+
+def discover_cases(data_root: Path,
+                   only_case: str | None = None) -> tuple[list[PatientCase], list[str]]:
+    """Scan an experiment tree; a selected case dir limits the scan to it."""
     problems: list[str] = []
     cases: list[PatientCase] = []
-    mrmg = data_root / "MRMG"
-    cp = data_root / "CP.xlsx"
+    root, selected_case = resolve_experiment_root(data_root)
+    only_case = only_case or selected_case
+    mrmg = root / "MRMG"
+    cp = root / "CP.xlsx"
     if not mrmg.is_dir():
         problems.append("missing:MRMG")
     if not cp.is_file():
@@ -140,6 +240,8 @@ def discover_cases(data_root: Path) -> tuple[list[PatientCase], list[str]]:
         return cases, ["unreadable:CP.xlsx:{}".format(exc)]
     for label in sorted(p.name for p in mrmg.iterdir() if p.is_dir()):
         for case_dir in sorted(p for p in (mrmg / label).iterdir() if p.is_dir()):
+            if only_case and case_dir.name != only_case:
+                continue
             row_matches = df.loc[df["ID"] == case_dir.name]
             if row_matches.empty:
                 problems.append("no-table-row:{}".format(case_dir.name))
@@ -150,6 +252,8 @@ def discover_cases(data_root: Path) -> tuple[list[PatientCase], list[str]]:
                 case_root=case_dir,
                 table_row=row_matches.iloc[0].to_dict(),
             ))
+    if only_case and not cases:
+        problems.append("case-not-found:{}".format(only_case))
     return cases, problems
 
 
@@ -211,6 +315,10 @@ class InferenceEngine:
 
     # ---- checkpoints -------------------------------------------------
     def _discover_checkpoints(self) -> list[Path]:
+        # Prefer the verified, byte-lossless ensemble store when present.
+        store = self.models_dir / "samt-checkpoints.zip"
+        if store.is_file():
+            return [store]
         # Ship layout: models_dir/fold{N}_{best_AUC_val,best_ACC_val}.pth
         hits = sorted(self.models_dir.glob("pathology_pretrain_fold*_*.pth"))
         if hits:
@@ -224,6 +332,10 @@ class InferenceEngine:
 
     @property
     def checkpoint_count(self) -> int:
+        if len(self._ckpt_paths) == 1 and \
+                self._ckpt_paths[0].name == "samt-checkpoints.zip":
+            with zipfile.ZipFile(self._ckpt_paths[0]) as archive:
+                return len(json.loads(archive.read("manifest.json"))["state"])
         return len(self._ckpt_paths)
 
     def _build_networks(self):
@@ -247,7 +359,8 @@ class InferenceEngine:
             }
 
             def cached_load(path, *args, **kwargs):
-                if str(path) in pretrain_path_variants:
+                if (str(path) in pretrain_path_variants and
+                        self._pretrain_state is not None):
                     return cached_pretrain
                 return real_load(path, *args, **kwargs)
 
@@ -259,27 +372,39 @@ class InferenceEngine:
             try:
                 shared_net, states = self._construct_networks(torch,
                     MFNet_img_pathology_transcat_l3m_orgTransformer_1,
-                    real_load)
+                    load_checkpoint_state)
             finally:
                 ResNet_3D.torch.load = real_load
             self._shared_net = shared_net
             self._checkpoint_states = states
             return self._checkpoint_states
 
-    def _construct_networks(self, torch, net_class, real_load):
+    def _construct_networks(self, torch, net_class, checkpoint_loader):
         net = net_class(n_classes=2, no_cuda=False, drop=0)
         net.to(self.device)
         net.eval()
         states: dict[str, object] = {}
-        for index, ckpt in enumerate(self._ckpt_paths, 1):
-            state = real_load(str(ckpt), map_location="cpu")
-            if self.retain_checkpoints:
-                states[ckpt.name] = state
-            del state
-            if self._on_status:
-                self._on_status("checkpoint:{}:{}".format(index, len(self._ckpt_paths)))
-        if not self.retain_checkpoints:
-            states = {ckpt.name: ckpt for ckpt in self._ckpt_paths}
+        if len(self._ckpt_paths) == 1 and \
+                self._ckpt_paths[0].name == "samt-checkpoints.zip":
+            with zipfile.ZipFile(self._ckpt_paths[0]) as archive:
+                names = list(json.loads(
+                    archive.read("manifest.json"))["state"])
+            for index, name in enumerate(names, 1):
+                if self.retain_checkpoints:
+                    states[name] = name
+                if self._on_status:
+                    self._on_status("checkpoint:{}:{}".format(index, len(names)))
+        else:
+            for index, ckpt in enumerate(self._ckpt_paths, 1):
+                state = checkpoint_loader(ckpt)
+                if self.retain_checkpoints:
+                    states[ckpt.name] = state
+                del state
+                if self._on_status:
+                    self._on_status("checkpoint:{}:{}".format(
+                        index, len(self._ckpt_paths)))
+            if not self.retain_checkpoints:
+                states = {ckpt.name: ckpt for ckpt in self._ckpt_paths}
         return net, states
 
     def _checkpoints(self) -> tuple[object, dict[str, object]]:
@@ -295,7 +420,10 @@ class InferenceEngine:
         prob_sum = np.zeros(2, dtype=np.float64)
         for index, (name, state) in enumerate(states.items(), 1):
             if not self.retain_checkpoints:
-                state = self.torch.load(str(state), map_location="cpu")
+                if isinstance(state, Path):
+                    state = load_checkpoint_state(state)
+                elif isinstance(state, str) and state.endswith("_val.pth"):
+                    state = self._load_store_checkpoint(name)
             net.load_state_dict(state)
             if progress:
                 progress("fold:{}".format(name))
@@ -309,6 +437,9 @@ class InferenceEngine:
             if not self.retain_checkpoints:
                 del state
         return fold_probs, prob_sum / max(len(states), 1)
+
+    def _load_store_checkpoint(self, name: str):
+        return load_stored_checkpoint(self._ckpt_paths[0], name)
 
     def _probe_backend(self, net) -> bool:
         """Exercise the vendored 3D path before committing to an accelerator."""

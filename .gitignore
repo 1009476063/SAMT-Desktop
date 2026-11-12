@@ -5,5 +5,6 @@ build/
 dist/
 *.spec.bak
 app/models/*.pth
+app/models/samt-checkpoints.zip
 app/core/samt_core/Networks/*.pth
 .pytest_cache/

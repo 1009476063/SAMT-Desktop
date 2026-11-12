@@ -15,21 +15,29 @@ def main() -> int:
     os.environ.setdefault("OMP_NUM_THREADS", str(cpu_count))
     os.environ.setdefault("MKL_NUM_THREADS", str(cpu_count))
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QDialog
 
-    from ui.main_window import MainWindow
+    from i18n import I18n
+    from settings import Settings
+    from ui.main_window import MainWindow, ResearchUseGate
     from ui.theme import application_font, palette, stylesheet
 
     app = QApplication(sys.argv)
     app.setApplicationName("SAMT Desktop")
-    app.setApplicationVersion("1.1.1")
+    app.setApplicationVersion("1.2.0")
     app.setFont(application_font())
     app.setPalette(palette())
     app.setStyleSheet(stylesheet())
     app.setAttribute(Qt.AA_DontShowIconsInMenus, False)
+
+    # The consent gate runs before the workbench is constructed or shown.
+    # Rejection is a normal exit and never leaves a hidden QMainWindow behind.
+    settings = Settings()
+    gate = ResearchUseGate(I18n(settings.data.get("language", "")), settings)
+    if gate.exec() != QDialog.Accepted:
+        return 0
     window = MainWindow()
     window.show()
-    window.start()
     return app.exec()
 
 

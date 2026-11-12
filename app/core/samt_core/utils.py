@@ -1,5 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
 np.seterr(all='raise')
 # def masked_Zscore_norm(ID,AMOTAI,img, mask_min, mask_max, percentile_min=None, percentile_max=None):
 def masked_Zscore_norm(img, mask_min, mask_max, percentile_min=None, percentile_max=None):

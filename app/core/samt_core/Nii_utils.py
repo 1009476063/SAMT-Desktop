@@ -1,7 +1,6 @@
 import SimpleITK as sitk
 import os
 import os.path as osp
-import pydicom
 import numpy as np
 import scipy.io
 
@@ -62,6 +61,7 @@ def dcm2nii(DCM_DIR, OUT_PATH):
     :param OUT_PATH: Output file suffixed with .nii.gz . *(Relative path)
     :return: No retuen.
     """
+    import pydicom
     fuse_list = []
     for dicom_file in os.listdir(DCM_DIR):
         dicom = pydicom.dcmread(osp.join(DCM_DIR, dicom_file))

@@ -20,15 +20,19 @@ if str(APP_DIR) not in sys.path:
 
 from i18n import I18n  # noqa: E402
 from settings import Settings  # noqa: E402
+from core.clinical_table import (  # noqa: E402
+    ClinicalTableError, match_clinical_row, widget_value,
+)
 from core.engine import (  # noqa: E402
     CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, PatientCase, discover_cases,
-    scan_results_to_dataframe, validate_case,
+    resolve_experiment_root, scan_results_to_dataframe, validate_case,
 )
+from ui.clinical_import_dialog import ClinicalImportDialog  # noqa: E402
 from ui.theme import COLORS  # noqa: E402
 
 
-# Disclaimer text is unchanged from 1.1.0; keep acceptance state across patch.
-DISCLAIMER_VERSION = "1.1.0"
+# Startup consent changed in 1.2.0; require one explicit fresh acceptance.
+DISCLAIMER_VERSION = "1.2.0"
 
 
 def _bundled_models_dir() -> Path:
@@ -72,13 +76,16 @@ def _divider(parent=None) -> QFrame:
     return line
 
 
-class DisclaimerDialog(QDialog):
-    """Visible, foreground research-use gate shown after its parent is shown."""
+class ResearchUseGate(QDialog):
+    """Standalone consent gate shown before any main window exists."""
 
     def __init__(self, i18n: I18n, settings: Settings, parent=None):
         super().__init__(parent)
         self.i18n = i18n
         self.settings = settings
+        self._accepted = bool(settings.data.get("disclaimer_accepted")) and \
+            settings.data.get("accepted_disclaimer_version") == \
+            DISCLAIMER_VERSION
         self.setWindowTitle(i18n.tr("disclaimer.title"))
         self.setModal(True)
         self.setMinimumWidth(560)
@@ -113,6 +120,8 @@ class DisclaimerDialog(QDialog):
         buttons.addWidget(self.enter_btn)
         layout.addLayout(buttons)
         self.checkbox.toggled.connect(self.enter_btn.setEnabled)
+        if self._accepted:
+            QTimer.singleShot(0, self.accept)
 
     def showEvent(self, event):  # noqa: D102, N802
         super().showEvent(event)
@@ -135,6 +144,10 @@ class DisclaimerDialog(QDialog):
         self.settings.data["accepted_disclaimer_version"] = DISCLAIMER_VERSION
         self.settings.save()
         super().accept()
+
+
+def _clinical_columns() -> list[str]:
+    return list(CLINICAL_COLUMNS) + list(PATHOLOGY_COLUMNS)
 
 
 class EngineInitThread(QThread):
@@ -217,9 +230,9 @@ class MainWindow(QMainWindow):
         self._init_thread = None
         self._closing = False
         self._busy = False
-        self._disclaimer_done = self._disclaimer_is_accepted()
         self._build_ui()
         self._connect_shortcuts()
+        self._prepare_engine()
 
     # ------------------------------------------------------------ UI setup
     def _build_ui(self):
@@ -398,6 +411,14 @@ class MainWindow(QMainWindow):
         case_row.addWidget(self.case_id_edit, 1)
         layout.addLayout(case_row)
         layout.addWidget(_caption(self.i18n.tr("single.case_id_hint")))
+        table_row = QHBoxLayout()
+        self.import_table_btn = QPushButton(
+            self.i18n.tr("single.import_table"))
+        self.import_table_btn.clicked.connect(self.import_clinical_table)
+        self.import_table_status = _caption("")
+        table_row.addWidget(self.import_table_btn)
+        table_row.addWidget(self.import_table_status, 1)
+        layout.addLayout(table_row)
         variables = QHBoxLayout()
         variables.setSpacing(18)
         variables.addWidget(self._build_form_group(
@@ -728,32 +749,10 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------- lifecycle
     def start(self):
-        """Called after show(), once the event loop can present native windows."""
+        """Keep the startup API for compatibility; consent is already done."""
         self.showNormal()
         self.raise_()
         self.activateWindow()
-        QTimer.singleShot(0, self._show_disclaimer_if_needed)
-
-    def _disclaimer_is_accepted(self) -> bool:
-        return bool(self.settings.data.get("disclaimer_accepted")) and \
-            self.settings.data.get("accepted_disclaimer_version") == \
-            DISCLAIMER_VERSION
-
-    def _show_disclaimer_if_needed(self):
-        if self._disclaimer_done:
-            self._prepare_engine()
-            return
-        dialog = DisclaimerDialog(self.i18n, self.settings, self)
-        accepted = dialog.exec()
-        dialog.deleteLater()
-        if accepted != QDialog.Accepted:
-            QMessageBox.information(
-                self, self.i18n.tr("app.short"),
-                self.i18n.tr("disclaimer.restart"))
-            QTimer.singleShot(0, QApplication.instance().quit)
-            return
-        self._disclaimer_done = True
-        self._prepare_engine()
 
     def _prepare_engine(self):
         if self._init_thread is not None and self._init_thread.isRunning():
@@ -918,6 +917,52 @@ class MainWindow(QMainWindow):
         self._prepare_engine()
 
     # ------------------------------------------------------- single flow
+    def import_clinical_table(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.i18n.tr("single.import_table_title"), "",
+            "Excel (*.xlsx *.xlsm)")
+        if not path:
+            return
+        case_id = self.case_id_edit.text().strip()
+        if not case_id:
+            for edit in self.file_edits.values():
+                text = edit.text().strip()
+                if text:
+                    candidate = Path(text).name.split("_DCE_N4")[0]
+                    if candidate and candidate != Path(text).name:
+                        case_id = candidate
+                        self.case_id_edit.setText(case_id)
+                        break
+        try:
+            match = match_clinical_row(path, case_id)
+        except (ClinicalTableError, OSError) as exc:
+            self.import_table_status.setText(self.i18n.tr(
+                "single.import_failed", error=str(exc)))
+            QMessageBox.warning(self, self.i18n.tr("common.notice"), str(exc))
+            return
+        columns = _clinical_columns()
+        if ClinicalImportDialog(
+                self.i18n, match.row, match.source, columns,
+                self).exec() != QDialog.Accepted:
+            self.import_table_status.setText(
+                self.i18n.tr("single.import_cancelled"))
+            return
+        case_id = str(match.row.get("ID") or case_id)
+        self.case_id_edit.setText(case_id)
+        for column in columns:
+            widget = self.form_edits[column]
+            value = widget_value(column, match.row.get(column))
+            if isinstance(widget, QComboBox):
+                index = widget.findData(value)
+                if index < 0:
+                    widget.insertItem(0, value, value)
+                    index = 0
+                widget.setCurrentIndex(index)
+            else:
+                widget.setText(value)
+        self.import_table_status.setText(self.i18n.tr(
+            "single.import_done", source=match.source))
+
     def _single_case(self) -> PatientCase | None:
         for key, edit in self.file_edits.items():
             if not edit.text() or not Path(edit.text()).is_file():
@@ -1086,6 +1131,11 @@ class MainWindow(QMainWindow):
                 self.i18n.tr("batch.dir_hint"))
             return
         cases, problems = discover_cases(data_dir)
+        root, selected_case = resolve_experiment_root(data_dir)
+        if root != data_dir.resolve():
+            self.batch_dir_edit.setText(str(root))
+            self.settings.data["last_data_dir"] = str(root)
+            self.settings.save()
         self.batch_cases = cases
         self.batch_results = []
         self._last_df = None
@@ -1102,7 +1152,8 @@ class MainWindow(QMainWindow):
             self.batch_status.setText(self.i18n.tr(
                 "batch.scan_problems", problems="; ".join(problems)))
         else:
-            self.batch_status.setText(self.i18n.tr("batch.found", n=len(cases)))
+            key = "batch.found_one" if selected_case else "batch.found"
+            self.batch_status.setText(self.i18n.tr(key, n=len(cases)))
         self._refresh_batch_actions()
 
     def _refresh_batch_actions(self):

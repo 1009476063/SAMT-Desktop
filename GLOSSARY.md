@@ -33,10 +33,16 @@ The class (Negative / Positive) chosen by the higher mean probability.
 Prediction using exactly one fold checkpoint, selected by fold number and metric.
 
 ## Experiment tree
-The on-disk layout consumed by batch mode: `<root>/MRMG/<Label>/<ID>/…` images plus `<root>/CP.xlsx`.
+The on-disk layout consumed by batch mode: `<root>/MRMG/<Label>/<ID>/…` images plus `<root>/CP.xlsx`. A selected study folder is resolved upward to this root.
 
 ## CP.xlsx
 The structured clinical/pathology table (Sheet1) supplying 55 encoded features. Column names and values are contract; the app does not paraphrase them.
+
+## Clinical table match
+The unique CP.xlsx row whose ID equals the selected case. Conflicting duplicate rows require operator correction; an empty case ID is allowed only when the workbook has one row.
+
+## Lossless checkpoint store
+A distribution form of the ten Fold checkpoints that keeps each tensor's raw bytes, shape, and dtype while storing identical tensor bytes once. It does not change the Ensemble.
 
 ## Research use
 The scope boundary of the entire application: no clinical decision support, no diagnostic claim. Enforced by the startup disclaimer.
