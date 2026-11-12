@@ -19,12 +19,12 @@ def main() -> int:
 
     from i18n import I18n
     from settings import Settings
-    from ui.main_window import MainWindow, ResearchUseGate
+    from ui.main_window import MainWindow, ResearchUseGate, has_current_consent
     from ui.theme import application_font, palette, stylesheet
 
     app = QApplication(sys.argv)
     app.setApplicationName("SAMT Desktop")
-    app.setApplicationVersion("1.2.2")
+    app.setApplicationVersion("1.3.0")
     app.setFont(application_font())
     app.setPalette(palette())
     app.setStyleSheet(stylesheet())
@@ -33,9 +33,10 @@ def main() -> int:
     # The consent gate runs before the workbench is constructed or shown.
     # Rejection is a normal exit and never leaves a hidden QMainWindow behind.
     settings = Settings()
-    gate = ResearchUseGate(I18n(settings.data.get("language", "")), settings)
-    if gate.exec() != QDialog.Accepted:
-        return 0
+    if not has_current_consent(settings):
+        gate = ResearchUseGate(I18n(settings.data.get("language", "")), settings)
+        if gate.exec() != QDialog.Accepted:
+            return 0
     window = MainWindow()
     window.show()
     return app.exec()

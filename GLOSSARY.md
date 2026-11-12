@@ -33,10 +33,16 @@ The class (Negative / Positive) chosen by the higher mean probability.
 Prediction using exactly one fold checkpoint, selected by fold number and metric.
 
 ## Experiment tree
-The on-disk layout consumed by batch mode: `<root>/MRMG/<Label>/<ID>/…` images plus `<root>/CP.xlsx`. A selected study folder is resolved upward to this root.
+The on-disk layout consumed by batch mode: `<root>/MRMG/<Label>/<ID>/…` images plus `<root>/CP.xlsx`. The root name is arbitrary. A selected study folder is resolved upward to this root, and selecting a specific case limits the scan to that case.
 
 ## CP.xlsx
 The structured clinical/pathology table (Sheet1) supplying 55 encoded features. Column names and values are contract; the app does not paraphrase them.
+
+## Field coverage
+The count of nonempty experiment columns in a CP.xlsx row or single-case form before encoding. It guides operator review and never substitutes or re-encodes missing values.
+
+## Image preview
+A read-only middle-slice rendering of a selected NIfTI input for visual verification. It never writes to the image and is not part of preprocessing.
 
 ## Clinical table match
 The unique CP.xlsx row whose ID equals the selected case. Conflicting duplicate rows require operator correction; an empty case ID is allowed only when the workbook has one row.
@@ -45,7 +51,7 @@ The unique CP.xlsx row whose ID equals the selected case. Conflicting duplicate 
 A distribution form of the ten Fold checkpoints that keeps each tensor's raw bytes, shape, and dtype while storing identical tensor bytes once. It does not change the Ensemble.
 
 ## Research use
-The scope boundary of the entire application: no clinical decision support, no diagnostic claim. Enforced by the startup disclaimer.
+The scope boundary of the entire application: no clinical decision support, no diagnostic claim. Enforced by the startup consent gate.
 
 ## Reference backend
 The CPU compute path used for exact numerical comparison with the experiment. CUDA and MPS are optional accelerators; their kernels may change last-digit probabilities.

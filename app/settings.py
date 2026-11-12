@@ -22,8 +22,9 @@ def settings_dir() -> Path:
 
 
 DEFAULTS = {
-    "language": "",  # "" = follow system
+    "language": "en-US",  # English is the default; users may switch to Chinese
     "disclaimer_accepted": False,
+    "remember_consent": True,
     "models_dir": "",  # empty = bundled models dir
     "device": "cpu",  # CPU is the exact-reproduction reference
     "low_memory": False,

@@ -27,6 +27,9 @@ import numpy as np
 import pandas as pd
 
 from .samt_core import _ensure_importable
+from .experiment_contract import (
+    CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, REQUIRED_INPUT_GLOBS,
+)
 
 _ensure_importable()
 
@@ -34,32 +37,6 @@ _ensure_importable()
 TASK = "pathology_pretrain"
 TRAIN_SUBDIR = "trained_models"
 DIRNAME_TEMPLATE = "bs4_epoch100_seed42_{date}_drop0"
-
-# Sheet1 column names of CP.xlsx (trailing spaces are significant).
-CLINICAL_COLUMNS = [
-    "Laterality ",
-    "Multifocality（Tumor number）",
-    "Location(nine)",
-    "cT",
-    "Calcification",
-    "Breast density ",
-    "Age",
-    "Tumor size MRI ",
-    "max diameter with lowest layer of ALN",
-]
-PATHOLOGY_COLUMNS = [
-    "Histological type  (needle biopsy)",
-    "Histological grade ",
-    "ER",
-    "PR",
-    "HER2",
-    "LVI",
-    "Ki67",
-    "SLN-positive",
-    "total SLN",
-    "Positive_Total_SLN_ratio",
-]
-
 
 @dataclass
 class PatientCase:
@@ -200,14 +177,13 @@ def build_checkpoint_store(paths: list[Path], target: Path) -> dict:
 def validate_case(case: PatientCase) -> list[str]:
     """Return human-readable problems; empty list means the case is runnable."""
     problems = []
-    if find_case_nifti(case.case_root, "{}_DCE_N4.nii*".format(case.case_id)) is None:
-        problems.append("DCE_N4")
-    if find_case_nifti(case.case_root, "{}_DCE_decay1.nii*".format(case.case_id)) is None:
-        problems.append("DCE_decay1")
-    if find_case_nifti(case.case_root / "MG", "*{}_*MLO.nii*".format(case.case_id)) is None:
-        problems.append("MLO")
-    if find_case_nifti(case.case_root / "MG", "*{}_*MLO_decay1.nii*".format(case.case_id)) is None:
-        problems.append("MLO_decay1")
+    for name, pattern in REQUIRED_INPUT_GLOBS:
+        search_root = case.case_root / "MG" \
+            if pattern.startswith("MG/") else case.case_root
+        relative = pattern[3:] if pattern.startswith("MG/") else pattern
+        if find_case_nifti(search_root,
+                           relative.format(id=case.case_id)) is None:
+            problems.append(name)
     for col in CLINICAL_COLUMNS + PATHOLOGY_COLUMNS:
         if col not in case.table_row:
             problems.append("column:" + col.strip())
@@ -480,16 +456,21 @@ class InferenceEngine:
 
     def _stage_image(self, target: Path, case: PatientCase, kind: str) -> None:
         patterns = {
-            "dce": ("{}_DCE_N4.nii*", "{}_DCE_N4.nii.gz", Path(".")),
-            "dce_decay": ("{}_DCE_decay1.nii*", "{}_DCE_decay1.nii.gz", Path(".")),
-            "mlo": ("*{}_*MLO.nii*", "{}_MG_MLO.nii.gz", Path("MG")),
-            "mlo_decay": ("*{}_*MLO_decay1.nii*", "{}_MLO_decay1.nii.gz", Path("MG")),
+            "dce": (REQUIRED_INPUT_GLOBS[0][1], "{}_DCE_N4.nii.gz", Path(".")),
+            "dce_decay": (REQUIRED_INPUT_GLOBS[1][1],
+                          "{}_DCE_decay1.nii.gz", Path(".")),
+            "mlo": (REQUIRED_INPUT_GLOBS[2][1][3:],
+                    "{}_MG_MLO.nii.gz", Path("MG")),
+            "mlo_decay": (REQUIRED_INPUT_GLOBS[3][1][3:],
+                          "{}_MLO_decay1.nii.gz", Path("MG")),
         }
         pattern, fallback_name, subdir = patterns[kind]
-        source = find_case_nifti(case.case_root / subdir, pattern.format(case.case_id))
+        source = find_case_nifti(case.case_root / subdir,
+                                 pattern.format(id=case.case_id))
         if source is None:
             raise FileNotFoundError("{}: {}".format(kind, case.case_id))
-        self._link_or_copy(source, target / subdir / fallback_name.format(case.case_id))
+        self._link_or_copy(source, target / subdir /
+                           fallback_name.format(case.case_id))
 
     def stage_cases(self, cases: list[PatientCase],
                     table_df: Optional[pd.DataFrame] = None) -> Path:

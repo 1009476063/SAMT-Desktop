@@ -4,12 +4,16 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
-## v1.2.2
+## v1.3.0
 
-This patch replaces NumPy tensor serialization with a torch-native byte copy so checkpoint-store verification also works on Windows runners with torch 2.3.
+This release keeps the original experiment logic and ten-checkpoint ensemble while making the workbench generic, bilingual, and lighter at startup.
 
-- A standalone research-use gate is shown before the main window is constructed. Rejection or closing exits immediately; heavy imports begin only after acceptance.
-- Batch mode resolves a selected case folder upward to the experiment root containing `MRMG/` and `CP.xlsx`, and scans only that case. Single-case mode can import the CP table, review the unique row, and fill all experiment fields.
+- The default interface is English. English and Chinese can be switched at runtime without restarting; consent, controls, validation messages, and result tables follow the active language immediately.
+- A substantive, sectioned research-use consent gate is shown before the main window exists. Rejection or closing exits immediately, and a recorded current acceptance never flashes the gate again.
+- The experiment root may have any name. It must contain `CP.xlsx` and `MRMG/<Positive|Negative>/<CaseID>/` with the four NIfTI inputs. Selecting the root scans all cases; selecting a case folder resolves upward and scans only that case.
+- Single-case mode can import a CP table, review the unique row and field coverage, fill the form unchanged, and preview a NIfTI middle slice. Batch mode shows required-input coverage for every case.
+- The UI shell loads no pandas, NumPy, PyTorch, or SimpleITK modules. Preview and model dependencies load only on their corresponding actions; Pillow remains bundled because `pretrainedmodels` imports `torchvision` during network construction.
+- The standalone gate keeps model loading after acceptance; existing byte-lossless checkpoint storage, CPU reference backend, and all ten float32 checkpoints are unchanged.
 - CI builds a byte-lossless shared-tensor checkpoint store. Identical float32 tensors are stored once, saving about 182 MB; every reconstructed tensor is verified against the original checkpoints. Quantization, pruning, ONNX conversion, and reducing the 10-fold ensemble are deliberately excluded.
 - Unused plotting/DICOM imports are removed from the inference import chain, and training-only packages are excluded from PyInstaller. PyTorch/MONAI imports and checkpoint preparation remain in a worker thread.
 - A reorganized research workbench provides single-case input, batch validation, a 10-checkpoint result table, runtime controls, and method documentation in Chinese and English.
@@ -24,6 +28,9 @@ This patch replaces NumPy tensor serialization with a torch-native byte copy so 
 - `app/ui/main_window.py` — PySide6 research workbench
 - `app/ui/theme.py` — cross-platform Qt design tokens
 - `app/locales/` — zh-CN / en-US JSON catalogs
+- `app/core/experiment_contract.py` — generic on-disk input contract
+- `app/core/contract_catalog.py` — lightweight directory and coverage scan
+- `app/ui/image_preview.py` — action-local NIfTI preview
 - `app/models/` — 10 fold checkpoints (not in Git; see below)
 - `packaging/` — PyInstaller specs
 - `.github/workflows/build.yml` — macOS arm64 + Windows x64 builds
@@ -44,6 +51,19 @@ They are copied from the original experiment package and are intentionally not t
 ```bash
 python -m pytest tests -q
 QT_QPA_PLATFORM=offscreen python app/main.py
+```
+
+Use any study root with this structure; `case1`, `case2`, and `NSLN` are examples only:
+
+```text
+<any-root>/
+├── CP.xlsx
+└── MRMG/
+    ├── Negative/<CaseID>/<CaseID>_DCE_N4.nii.gz
+    │                    <CaseID>_DCE_decay1.nii.gz
+    │                    MG/*<CaseID>*_MLO.nii.gz
+    │                    MG/*<CaseID>*_MLO_decay1.nii.gz
+    └── Positive/<CaseID>/...
 ```
 
 To rebuild and verify the lossless checkpoint store locally:

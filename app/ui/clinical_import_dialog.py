@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
 
 class ClinicalImportDialog(QDialog):
     def __init__(self, i18n, row: dict, source: str, columns: list[str],
-                 parent=None):
+                 coverage=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(i18n.tr("single.import_review_title"))
         self.setMinimumSize(620, 520)
@@ -17,10 +17,19 @@ class ClinicalImportDialog(QDialog):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
 
+        filled = coverage.filled if coverage else sum(
+            bool(row.get(column)) for column in columns)
         summary = QLabel(i18n.tr("single.import_review_summary",
-                                 source=source, total=len(columns)))
+                                 source=source, total=len(columns),
+                                 filled=filled))
         summary.setWordWrap(True)
         layout.addWidget(summary)
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(coverage.percent if coverage else
+                     round(filled * 100 / max(1, len(columns))))
+        bar.setFormat("%v%")
+        layout.addWidget(bar)
 
         table = QTableWidget(len(columns), 2)
         table.setHorizontalHeaderLabels([

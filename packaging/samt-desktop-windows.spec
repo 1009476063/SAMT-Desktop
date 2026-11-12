@@ -18,6 +18,7 @@ a = Analysis(
     hiddenimports=[
         "monai", "monai.transforms", "monai.data",
         "pretrainedmodels", "SimpleITK", "skimage", "openpyxl", "six",
+        "torchvision", "torchvision.transforms", "PIL", "PIL.Image",
         "ui.main_window", "ui.theme", "core.engine",
         # samt_core's flat imports (from Nii_utils import ...) resolve as
         # top-level modules at runtime via sys.path injection, so they must
@@ -25,7 +26,7 @@ a = Analysis(
         "Nii_utils", "utils", "dataset", "ResNet_3D", "Multimodal_Fusion_Network",
     ],
     excludes=["tkinter", "PyQt5", "IPython", "matplotlib", "pydicom",
-              "sklearn", "PIL", "tensorboardX", "pytest"],
+              "sklearn", "tensorboardX", "pytest"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import locale
 from pathlib import Path
 
 
@@ -11,7 +10,7 @@ SUPPORTED = ("zh-CN", "en-US")
 
 
 class I18n:
-    def __init__(self, lang: str = ""):
+    def __init__(self, lang: str = "en-US"):
         self._catalogs = {}
         for code in SUPPORTED:
             try:
@@ -19,17 +18,15 @@ class I18n:
                     (LOCALES_DIR / f"{code}.json").read_text("utf-8"))
             except Exception:
                 self._catalogs[code] = {}
-        self.lang = lang if lang in SUPPORTED else self._system_lang()
+        self.lang = lang if lang in SUPPORTED else "en-US"
 
-    @staticmethod
-    def _system_lang() -> str:
-        try:
-            code = locale.getdefaultlocale()[0] or ""
-        except Exception:
-            code = ""
-        return "zh-CN" if code.lower().startswith("zh") else "en-US"
+    def set_language(self, lang: str):
+        """Switch the active catalog without rebuilding any widgets."""
+        if lang in SUPPORTED and lang != self.lang:
+            self.lang = lang
 
     def tr(self, key: str, **kwargs) -> str:
+        fallback = kwargs.pop("fallback", None)
         text = self._catalogs.get(self.lang, {}).get(key) \
-            or self._catalogs["en-US"].get(key) or key
+            or self._catalogs["en-US"].get(key) or fallback or key
         return text.format(**kwargs) if kwargs else text
