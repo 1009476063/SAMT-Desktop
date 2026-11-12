@@ -4,7 +4,9 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
-## v1.2.0
+## v1.2.1
+
+This patch replaces NumPy tensor serialization with a torch-native byte copy so checkpoint-store verification also works on Windows runners with torch 2.3.
 
 - A standalone research-use gate is shown before the main window is constructed. Rejection or closing exits immediately; heavy imports begin only after acceptance.
 - Batch mode resolves a selected case folder upward to the experiment root containing `MRMG/` and `CP.xlsx`, and scans only that case. Single-case mode can import the CP table, review the unique row, and fill all experiment fields.

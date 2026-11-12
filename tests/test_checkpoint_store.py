@@ -1,3 +1,4 @@
+import ctypes
 import sys
 from pathlib import Path
 
@@ -12,7 +13,9 @@ from core.engine import (  # noqa: E402
 
 
 def _tensor_bytes(tensor) -> bytes:
-    return tensor.detach().cpu().numpy().tobytes()
+    storage = tensor.detach().cpu().contiguous().untyped_storage()
+    return bytes((ctypes.c_ubyte * storage.nbytes()).from_address(
+        storage.data_ptr()))
 
 
 def test_deduplicated_store_rebuilds_byte_identical_state(tmp_path):

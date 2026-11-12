@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import sys
@@ -13,12 +14,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "app"))
 
-import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 
 def tensor_bytes(tensor) -> bytes:
-    return tensor.detach().cpu().numpy().tobytes()
+    storage = tensor.detach().cpu().contiguous().untyped_storage()
+    return bytes((ctypes.c_ubyte * storage.nbytes()).from_address(
+        storage.data_ptr()))
 
 
 def main() -> int:
@@ -37,9 +39,13 @@ def main() -> int:
     offset = 0
     for item in info["blobs"]:
         length = int(item["size"])
-        array = np.frombuffer(payload[offset:offset + length],
-                              dtype=np.dtype(item["dtype"]))
-        tensors.append(torch.from_numpy(array.copy()).reshape(item["shape"]).clone())
+        dtype = getattr(torch, item["dtype"])
+        storage = torch.empty(0, dtype=dtype).untyped_storage()
+        storage.resize_(length)
+        ctypes.memmove(storage.data_ptr(),
+                       payload[offset:offset + length], length)
+        tensors.append(torch.empty(0, dtype=dtype).set_(
+            storage, 0, item["shape"], None).clone())
         offset += length
     for path in sorted(args.models.glob("pathology_pretrain_fold*_*.pth")):
         original = torch.load(str(path), map_location="cpu")

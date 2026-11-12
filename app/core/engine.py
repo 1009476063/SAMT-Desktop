@@ -6,6 +6,7 @@ its Dataset classes through generated single-case split pickles.
 """
 from __future__ import annotations
 
+import ctypes
 import glob
 import hashlib
 import json
@@ -125,9 +126,13 @@ def load_stored_checkpoint(path: Path, name: str) -> dict:
         for item in manifest["blobs"]:
             length = int(item["size"])
             raw = tensor_bytes[offset:offset + length]
-            array = np.frombuffer(raw, dtype=np.dtype(item["dtype"]))
-            tensors.append(torch.from_numpy(array.copy()).reshape(
-                item["shape"]).clone())
+            dtype = getattr(torch, item["dtype"])
+            storage = torch.empty(0, dtype=dtype).untyped_storage()
+            storage.resize_(length)
+            ctypes.memmove(storage.data_ptr(), raw, length)
+            tensor = torch.empty(0, dtype=dtype).set_(
+                storage, 0, item["shape"], None).clone()
+            tensors.append(tensor)
             offset += length
         return {key: tensors[int(index)] for key, index in
                 manifest["state"][name].items()}
@@ -157,7 +162,9 @@ def build_checkpoint_store(paths: list[Path], target: Path) -> dict:
         for key, tensor in state.items():
             if not torch.is_tensor(tensor):
                 raise ValueError("non-tensor state in {}".format(path.name))
-            raw = tensor.detach().cpu().numpy().tobytes()
+            storage = tensor.detach().cpu().contiguous().untyped_storage()
+            raw = bytes((ctypes.c_ubyte * storage.nbytes()).from_address(
+                storage.data_ptr()))
             identity = (str(tensor.dtype).replace("torch.", ""), raw)
             index = blob_index.get(identity)
             if index is None:
