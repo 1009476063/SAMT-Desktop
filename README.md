@@ -4,7 +4,7 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
-## v1.2.1
+## v1.2.2
 
 This patch replaces NumPy tensor serialization with a torch-native byte copy so checkpoint-store verification also works on Windows runners with torch 2.3.
 

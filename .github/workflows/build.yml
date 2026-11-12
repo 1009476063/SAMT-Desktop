@@ -10,9 +10,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  prepare_release:
+    name: prepare release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release shell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" \
+              --repo "$GITHUB_REPOSITORY" --title "SAMT Desktop ${GITHUB_REF_NAME}" \
+              --notes "Automated macOS arm64 and Windows x64 research build."
+
   build:
+    needs: prepare_release
+    if: always() && (needs.prepare_release.result == 'success' || needs.prepare_release.result == 'skipped')
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -98,48 +119,33 @@ jobs:
         run: |
           Compress-Archive -Path dist/SAMT-Desktop -DestinationPath dist/${{ matrix.artifact }}.zip
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        if: runner.os == 'Windows'
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.zip
+      - name: Publish macOS disk image
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -f dist/SAMT-Desktop-macOS-arm64.dmg
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/SAMT-Desktop-macOS-arm64.dmg \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
-      - name: Upload macOS disk image
-        uses: actions/upload-artifact@v4
-        if: runner.os == 'macOS'
-        with:
-          name: SAMT-Desktop-macOS-arm64-dmg
-          path: dist/SAMT-Desktop-macOS-arm64.dmg
-
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Split oversized release assets
+      - name: Publish Windows archive
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          set -euo pipefail
+          cd dist
+          archive="${{ matrix.artifact }}.zip"
+          test -f "$archive"
           mkdir -p release-assets
-          find artifacts -type f \( -name '*.zip' -o -name '*.dmg' \) -print0 | while IFS= read -r -d '' src; do
-            name="$(basename "$src")"
-            size="$(stat -c%s "$src")"
-            if [ "$size" -lt 2147483648 ]; then
-              cp "$src" "release-assets/$name"
-              echo "single: $name ($size bytes)"
-            else
-              split -b 1500M -d -a 2 "$src" "release-assets/$name.part"
-              echo "split: $name ($size bytes)"
-              ls -lh "release-assets/$name.part"*
-            fi
-          done
+          size="$(stat -c%s "$archive")"
+          if [ "$size" -lt 2147483648 ]; then
+            cp "$archive" "release-assets/$archive"
+          else
+            split -b 1500M -d -a 2 "$archive" "release-assets/$archive.part"
+          fi
           cat > release-assets/README-ASSETS.txt <<'TXT'
           SAMT Desktop release assets
 
@@ -159,8 +165,20 @@ jobs:
             }
             $out.Dispose()
           TXT
+          gh release upload "${GITHUB_REF_NAME}" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
-      - name: Attach to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release-assets/*
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "$GITHUB_REPOSITORY" --title "SAMT Desktop ${GITHUB_REF_NAME}"
