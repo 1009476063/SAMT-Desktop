@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .experiment_contract import (
     CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, REQUIRED_INPUT_GLOBS,
-    experiment_tree_is_valid,
+    experiment_tree_is_valid, resolve_experiment_root,
 )
 
 
@@ -21,17 +21,6 @@ class CatalogCase:
     label_dir: str
     case_root: Path
     missing: tuple[str, ...]
-
-
-def resolve_experiment_root(path: str | Path) -> tuple[Path, str | None]:
-    """Resolve any selected folder to the nearest valid experiment root."""
-    selected = Path(path).expanduser().resolve()
-    if not selected.is_dir():
-        return selected, None
-    for parent in (selected, *selected.parents):
-        if experiment_tree_is_valid(parent):
-            return parent, selected.name if selected != parent else None
-    return selected, None
 
 
 def _find(case_root: Path, pattern: str) -> bool:

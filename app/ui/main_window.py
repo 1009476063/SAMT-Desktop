@@ -417,7 +417,7 @@ class MainWindow(QMainWindow):
         self.language_toggle.setIconSize(QSize(20, 20))
         self.language_toggle.setFixedWidth(38)
         self.language_toggle.setToolTip(
-            "English" if self.i18n.lang == "zh-CN" else "中文")
+            self.i18n.tr("common.switch_language"))
         self.language_toggle.clicked.connect(self._quick_toggle_language)
         row.addWidget(self.language_toggle)
         return header
@@ -1037,16 +1037,17 @@ class MainWindow(QMainWindow):
             return
         detail = localized_error(self.i18n, message)
         self._set_status(self.status_label, "status.error")
-        self._set_status(self.model_status_label, "raw", text=detail)
         if message == "error.no_checkpoints":
-            self._dynamic_text[self.model_status_label] = (
-                "error.no_checkpoints", {})
+            self._set_status(self.model_status_label,
+                              "error.no_checkpoints")
         else:
-            self._dynamic_text[self.model_status_label] = (
-                "raw", {"text": detail})
+            self._set_status(self.model_status_label, "error.raw_detail",
+                             detail=message)
         self.apply_settings_btn.setEnabled(True)
         self._dispose_init_thread()
-        QMessageBox.critical(self, self.i18n.tr("common.error"), detail)
+        QMessageBox.critical(
+            self, self.i18n.tr("common.error"),
+            self.model_status_label.text())
 
     def _dispose_init_thread(self):
         thread = self._init_thread
@@ -1588,10 +1589,11 @@ class MainWindow(QMainWindow):
         if message == "error.no_checkpoints":
             self._set_status(self.run_log, "error.no_checkpoints")
         else:
-            self._set_status(self.run_log, "raw",
-                             text=localized_error(self.i18n, message))
+            self._set_status(self.run_log, "error.raw_detail",
+                             detail=message)
         self._dispose_active_thread()
-        QMessageBox.critical(self, self.i18n.tr("common.error"), message)
+        QMessageBox.critical(
+            self, self.i18n.tr("common.error"), self.run_log.text())
 
     def _dispose_active_thread(self):
         thread = self._active_thread

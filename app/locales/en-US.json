@@ -213,6 +213,7 @@
   "common.switch_language": "Switch interface language",
   "raw": "{text}",
   "error.no_checkpoints": "No fold checkpoints were found in the selected directory.",
+  "error.raw_detail": "Runtime error: {detail}",
   "status.prepared_detail": "Models ready · {seconds:.1f}s · {fingerprint}{note}",
   "status.accelerator_warning": "\nAccelerated backend active; probabilities may differ slightly from the CPU reference.",
   "inputs.dce_n4": "N4-corrected DCE-MRI",

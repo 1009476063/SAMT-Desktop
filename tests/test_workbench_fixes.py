@@ -139,7 +139,8 @@ def test_preview_renders_a_real_nifti_with_qt_application(tmp_path):
 
 def test_dynamic_status_messages_switch_language_without_restart():
     from PySide6.QtWidgets import QApplication
-    from ui.main_window import MainWindow
+    import ui.main_window as main_window
+    MainWindow = main_window.MainWindow
 
     app = QApplication.instance() or QApplication([])
     MainWindow._prepare_engine = lambda self: None
@@ -151,6 +152,19 @@ def test_dynamic_status_messages_switch_language_without_restart():
     assert window.batch_status.text().startswith("Directory validation:")
     window._apply_language("zh-CN")
     assert window.batch_status.text().startswith("目录校验：")
+    dialogs = []
+    original_critical = main_window.QMessageBox.critical
+    main_window.QMessageBox.critical = staticmethod(
+        lambda *args: dialogs.append(args[-1]))
+    try:
+        window._on_engine_failed("synthetic-runtime-error")
+    finally:
+        main_window.QMessageBox.critical = original_critical
+    assert dialogs == [window.model_status_label.text()]
+    assert dialogs[0].startswith("运行时错误：")
+    assert window.model_status_label.text().startswith("运行时错误：")
+    window._apply_language("en-US")
+    assert window.model_status_label.text().startswith("Runtime error:")
     window.close()
 
 

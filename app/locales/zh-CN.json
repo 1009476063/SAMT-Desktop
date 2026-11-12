@@ -213,6 +213,7 @@
   "common.switch_language": "切换界面语言",
   "raw": "{text}",
   "error.no_checkpoints": "所选目录中未发现折权重。",
+  "error.raw_detail": "运行时错误：{detail}",
   "status.prepared_detail": "模型已就绪 · {seconds:.1f}秒 · {fingerprint}{note}",
   "status.accelerator_warning": "\n正在使用加速后端，概率可能与 CPU 参考实现存在末位差异。",
   "inputs.dce_n4": "N4 校正 DCE-MRI",

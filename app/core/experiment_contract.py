@@ -49,6 +49,30 @@ def experiment_tree_is_valid(root: Path) -> bool:
     return (root / "MRMG").is_dir() and (root / "CP.xlsx").is_file()
 
 
+def resolve_experiment_root(path: str | Path) -> tuple[Path, str | None]:
+    """Resolve any selected folder to the nearest valid experiment root.
+
+    Only a directory at ``MRMG/<Label>/<CaseID>`` is treated as a selected
+    case. Ancillary folders such as ``MG``, ``MRMG``, or a label folder must
+    not be mistaken for a case ID by the experiment's glob contract.
+    """
+    selected = Path(path).expanduser().resolve()
+    if not selected.is_dir():
+        return selected, None
+    for parent in (selected, *selected.parents):
+        if not experiment_tree_is_valid(parent):
+            continue
+        try:
+            relative = selected.relative_to(parent / "MRMG")
+        except ValueError:
+            return parent, None
+        parts = relative.parts
+        if len(parts) >= 2:
+            return parent, parts[1]
+        return parent, None
+    return selected, None
+
+
 def experiment_tree_description() -> str:
     """Plain-text layout used in README and the UI directory hint."""
     return (

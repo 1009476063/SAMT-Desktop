@@ -10,6 +10,9 @@ from core.engine import (  # noqa: E402
     CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, discover_cases,
     resolve_experiment_root,
 )
+from core.contract_catalog import (  # noqa: E402
+    resolve_experiment_root as catalog_resolve_experiment_root,
+)
 
 
 def test_selected_case_directory_resolves_to_experiment_root(tmp_path):
@@ -30,3 +33,11 @@ def test_selected_case_directory_resolves_to_experiment_root(tmp_path):
     assert problems == []
     assert [item.case_id for item in cases] == ["case2"]
     assert cases[0].label_dir == "Positive"
+    mg_dir = case / "MG"
+    assert resolve_experiment_root(mg_dir) == (root.resolve(), "case2")
+    assert catalog_resolve_experiment_root(mg_dir) == (root.resolve(), "case2")
+    assert resolve_experiment_root(root / "MRMG" / "Positive") == (
+        root.resolve(), None)
+    cases, problems = discover_cases(mg_dir)
+    assert problems == []
+    assert [item.case_id for item in cases] == ["case2"]

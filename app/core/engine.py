@@ -29,6 +29,7 @@ import pandas as pd
 from .samt_core import _ensure_importable
 from .experiment_contract import (
     CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, REQUIRED_INPUT_GLOBS,
+    resolve_experiment_root,
 )
 
 _ensure_importable()
@@ -188,17 +189,6 @@ def validate_case(case: PatientCase) -> list[str]:
         if col not in case.table_row:
             problems.append("column:" + col.strip())
     return problems
-
-
-def resolve_experiment_root(path: Path) -> tuple[Path, str | None]:
-    """Accept a tree root, MRMG, a label dir, or one selected case dir."""
-    selected = Path(path).expanduser().resolve()
-    if not selected.is_dir():
-        return selected, None
-    for parent in (selected, *selected.parents):
-        if (parent / "MRMG").is_dir() and (parent / "CP.xlsx").is_file():
-            return parent, selected.name if selected != parent else None
-    return selected, None
 
 
 def discover_cases(data_root: Path,
