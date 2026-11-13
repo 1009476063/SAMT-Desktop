@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSize, Qt, QThread, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import (
+    QIcon, QKeySequence, QPainter, QPixmap, QShortcut, QTextOption,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
     QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
@@ -55,6 +57,19 @@ def _language_icon() -> QIcon:
     painter.drawLine(4, 16, 28, 16)
     painter.drawLine(16, 4, 16, 28)
     painter.drawArc(9, 4, 14, 24, 65 * 16, 230 * 16)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _copy_icon() -> QIcon:
+    """Draw the two-sheet copy glyph used by the tree code block."""
+    pixmap = QPixmap(24, 24)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.white)
+    painter.drawRoundedRect(4, 4, 12, 16, 2, 2)
+    painter.drawRoundedRect(9, 8, 11, 12, 2, 2)
     painter.end()
     return QIcon(pixmap)
 
@@ -811,8 +826,37 @@ class MainWindow(QMainWindow):
         row.addWidget(self.batch_run_btn)
         row.addWidget(self.batch_export_btn)
         root.addWidget(controls)
-        self.structure_label = _caption("")
-        root.addWidget(self.structure_label)
+        self.structure_title = self._tracked(
+            _section_label(""), "common.directory_structure")
+        root.addWidget(self.structure_title)
+        self.structure_copy = QToolButton()
+        self.structure_copy.setIcon(_copy_icon())
+        self.structure_copy.setIconSize(QSize(18, 18))
+        self.structure_copy.setToolTip(
+            self.i18n.tr("directory.copy_tree"))
+        self.structure_copy.clicked.connect(self._copy_experiment_tree)
+        self.structure_browser = QTextBrowser()
+        self.structure_browser.setProperty("role", "tree")
+        self.structure_browser.setReadOnly(True)
+        self.structure_browser.setOpenExternalLinks(False)
+        self.structure_browser.setWordWrapMode(QTextOption.NoWrap)
+        self.structure_browser.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.structure_browser.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.structure_browser.setFixedHeight(188)
+        tree_panel = QFrame()
+        tree_panel.setProperty("role", "tree_panel")
+        tree_layout = QVBoxLayout(tree_panel)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.setSpacing(0)
+        copy_row = QHBoxLayout()
+        copy_row.addStretch(1)
+        copy_row.addWidget(self.structure_copy)
+        tree_layout.addLayout(copy_row)
+        tree_layout.addWidget(self.structure_browser)
+        root.addWidget(tree_panel)
+        self._refresh_structure_label()
         self.batch_table = QTableWidget(0, 8)
         self._set_table_headers(self.batch_table, (
             "batch.column_case", "batch.column_label",
@@ -1152,6 +1196,8 @@ class MainWindow(QMainWindow):
             edit.setPlaceholderText(self.i18n.tr("common.missing"))
         self.batch_dir_edit.setPlaceholderText(
             self.i18n.tr("batch.dir_hint"))
+        self.structure_copy.setToolTip(
+            self.i18n.tr("directory.copy_tree"))
         if self.preview_image.pixmap() is None:
             self.preview_image.setText(self.i18n.tr("common.preview_empty"))
         for widget, (key, kwargs) in list(self._dynamic_text.items()):
@@ -1179,10 +1225,14 @@ class MainWindow(QMainWindow):
                 self.i18n.tr("app.version")))
 
     def _refresh_structure_label(self):
-        if hasattr(self, "structure_label"):
-            self.structure_label.setText("{}\n{}".format(
-                self.i18n.tr("common.directory_structure"),
-                experiment_tree_description()))
+        if hasattr(self, "structure_browser"):
+            self.structure_browser.setPlainText(
+                self.i18n.tr("directory.tree",
+                             fallback=experiment_tree_description()))
+
+    def _copy_experiment_tree(self):
+        QApplication.clipboard().setText(
+            self.structure_browser.toPlainText())
 
     def _retranslate_result(self):
         result = getattr(self, "_last_single_result", None)

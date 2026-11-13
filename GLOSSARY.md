@@ -33,7 +33,7 @@ The class (Negative / Positive) chosen by the higher mean probability.
 Prediction using exactly one fold checkpoint, selected by fold number and metric.
 
 ## Experiment tree
-The on-disk layout consumed by batch mode: `<root>/MRMG/<Label>/<ID>/…` images plus `<root>/CP.xlsx`. The root name is arbitrary. A selected study folder is resolved upward to this root, and selecting a specific case limits the scan to that case.
+The on-disk layout consumed by batch mode: a study root holding `CP.xlsx` and `MRMG/<Label>/<ID>/` case images. All root, label, and case names are arbitrary. A selected study folder is resolved upward to this root, and selecting a specific case limits the scan to that case.
 
 ## CP.xlsx
 The structured clinical/pathology table (Sheet1) supplying 55 encoded features. Column names and values are contract; the app does not paraphrase them.

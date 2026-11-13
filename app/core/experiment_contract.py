@@ -74,13 +74,18 @@ def resolve_experiment_root(path: str | Path) -> tuple[Path, str | None]:
 
 
 def experiment_tree_description() -> str:
-    """Plain-text layout used in README and the UI directory hint."""
+    """Generic ASCII tree used as a fallback for the localized UI tree."""
     return (
-        "<root>/CP.xlsx\n"
-        "<root>/MRMG/<Positive|Negative>/<CaseID>/<CaseID>_DCE_N4.nii[.gz]\n"
-        "<root>/MRMG/<Positive|Negative>/<CaseID>/<CaseID>_DCE_decay1.nii[.gz]\n"
-        "<root>/MRMG/<Positive|Negative>/<CaseID>/MG/*<CaseID>*_MLO.nii[.gz]\n"
-        "<root>/MRMG/<Positive|Negative>/<CaseID>/MG/*<CaseID>*_MLO_decay1.nii[.gz]"
+        "StudyRoot/\n"
+        "├── CP.xlsx\n"
+        "└── MRMG/\n"
+        "    └── <Label>/\n"
+        "        └── <CaseID>/\n"
+        "            ├── <CaseID>_DCE_N4.nii[.gz]\n"
+        "            ├── <CaseID>_DCE_decay1.nii[.gz]\n"
+        "            └── MG/\n"
+        "                ├── *<CaseID>*_MLO.nii[.gz]\n"
+        "                └── *<CaseID>*_MLO_decay1.nii[.gz]"
     )
 
 

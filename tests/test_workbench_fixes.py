@@ -91,7 +91,7 @@ entry = importlib.util.module_from_spec(spec)
 sys.modules["samt_entry"] = entry
 spec.loader.exec_module(entry)
 assert entry.main() == 0
-assert ("version", "1.3.0") in calls
+assert ("version", "1.3.1") in calls
 assert "gate" in calls and "eventloop" not in calls
 assert not [m for m in ("core.engine", "pandas", "numpy", "torch", "PIL")
             if m in sys.modules]
@@ -280,7 +280,7 @@ def test_locale_catalogs_have_matching_keys_and_runtime_terms():
         "tokens", "logits", "P(NSLN", "P(negative", "P(positive",
             ".csv", ".nii", ".xlsx", ".xlsm", ".gz", "nii", "root", "MRMG",
             "Excel", "xlsx", "xlsm",
-        "CP.xlsx", "Positive", "Negative", "CaseID", "Sheet",
+        "CP.xlsx", "Positive", "Negative", "CaseID", "Sheet", "MG",
     )
     placeholders = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
     for key, text in catalogs["zh-CN"].items():

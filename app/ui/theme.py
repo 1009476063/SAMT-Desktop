@@ -20,6 +20,8 @@ COLORS = {
     "negative": "#2d6b58",
     "warning": "#8b5b18",
     "disabled": "#e4e9eb",
+    "tree": "#17232b",
+    "tree_text": "#dcecec",
 }
 
 
@@ -97,6 +99,28 @@ def stylesheet() -> str:
     QFrame[role="divider"] {{
         color: {COLORS['border']};
     }}
+    QFrame[role="tree_panel"] {{
+        background: {COLORS['tree']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 6px;
+    }}
+    QTextBrowser[role="tree"] {{
+        background: {COLORS['tree']};
+        color: {COLORS['tree_text']};
+        border: 0px;
+        border-radius: 0px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 9pt;
+        padding: 4px 12px 12px;
+    }}
+    QToolButton {{
+        border: 0px;
+        border-radius: 4px;
+        color: {COLORS['tree_text']};
+        min-width: 28px;
+        min-height: 26px;
+    }}
+    QToolButton:hover {{ background: rgba(255, 255, 255, 0.12); }}
     QPushButton {{
         background: {COLORS['surface']};
         border: 1px solid {COLORS['border']};

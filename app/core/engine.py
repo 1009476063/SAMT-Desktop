@@ -364,20 +364,24 @@ class InferenceEngine:
                     archive.read("manifest.json"))["state"])
             for index, name in enumerate(names, 1):
                 if self.retain_checkpoints:
+                    states[name] = self._load_store_checkpoint(name)
+                else:
+                    # Keep all ten ordered fold identities; _predict_states
+                    # rereads each state dict when low-memory mode is active.
                     states[name] = name
                 if self._on_status:
                     self._on_status("checkpoint:{}:{}".format(index, len(names)))
         else:
             for index, ckpt in enumerate(self._ckpt_paths, 1):
-                state = checkpoint_loader(ckpt)
                 if self.retain_checkpoints:
+                    state = checkpoint_loader(ckpt)
                     states[ckpt.name] = state
-                del state
+                    del state
+                else:
+                    states[ckpt.name] = ckpt
                 if self._on_status:
                     self._on_status("checkpoint:{}:{}".format(
                         index, len(self._ckpt_paths)))
-            if not self.retain_checkpoints:
-                states = {ckpt.name: ckpt for ckpt in self._ckpt_paths}
         return net, states
 
     def _checkpoints(self) -> tuple[object, dict[str, object]]:
@@ -395,7 +399,7 @@ class InferenceEngine:
             if not self.retain_checkpoints:
                 if isinstance(state, Path):
                     state = load_checkpoint_state(state)
-                elif isinstance(state, str) and state.endswith("_val.pth"):
+                elif isinstance(state, str) and name == state:
                     state = self._load_store_checkpoint(name)
             net.load_state_dict(state)
             if progress:

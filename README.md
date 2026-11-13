@@ -4,13 +4,17 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
+## v1.3.1
+
+This patch fixes the lossless checkpoint store inference path: retained and low-memory modes now pass all ten reconstructed state dictionaries to the shared network in their original order. It also replaces the flat path hint with a generic, copyable ASCII tree. The research-use consent version and all ten float32 weights are unchanged.
+
 ## v1.3.0
 
 This release keeps the original experiment logic and ten-checkpoint ensemble while making the workbench generic, bilingual, and lighter at startup.
 
 - The default interface is English. English and Chinese can be switched at runtime without restarting; consent, controls, validation messages, and result tables follow the active language immediately.
 - A substantive, sectioned research-use consent gate is shown before the main window exists. Rejection or closing exits immediately, and a recorded current acceptance never flashes the gate again.
-- The experiment root may have any name. It must contain `CP.xlsx` and `MRMG/<Positive|Negative>/<CaseID>/` with the four NIfTI inputs. Selecting the root scans all cases; selecting a case folder resolves upward and scans only that case.
+- The experiment root may have any name. It must contain `CP.xlsx` and `MRMG/` with disk-label and case folders holding the four NIfTI inputs. Selecting the root scans all cases; selecting a case folder resolves upward and scans only that case.
 - Single-case mode can import a CP table, review the unique row and field coverage, fill the form unchanged, and preview a NIfTI middle slice. Batch mode shows required-input coverage for every case.
 - The UI shell loads no pandas, NumPy, PyTorch, or SimpleITK modules. Preview and model dependencies load only on their corresponding actions; Pillow remains bundled because `pretrainedmodels` imports `torchvision` during network construction.
 - The standalone gate keeps model loading after acceptance; existing byte-lossless checkpoint storage, CPU reference backend, and all ten float32 checkpoints are unchanged.
@@ -53,17 +57,19 @@ python -m pytest tests -q
 QT_QPA_PLATFORM=offscreen python app/main.py
 ```
 
-Use any study root with this structure; `case1`, `case2`, and `NSLN` are examples only:
+Use any study root with this generic structure. All root, disk-label, and case names are arbitrary:
 
 ```text
-<any-root>/
+StudyRoot/
 ├── CP.xlsx
 └── MRMG/
-    ├── Negative/<CaseID>/<CaseID>_DCE_N4.nii.gz
-    │                    <CaseID>_DCE_decay1.nii.gz
-    │                    MG/*<CaseID>*_MLO.nii.gz
-    │                    MG/*<CaseID>*_MLO_decay1.nii.gz
-    └── Positive/<CaseID>/...
+    └── <Label>/
+        └── <CaseID>/
+            ├── <CaseID>_DCE_N4.nii[.gz]
+            ├── <CaseID>_DCE_decay1.nii[.gz]
+            └── MG/
+                ├── *<CaseID>*_MLO.nii[.gz]
+                └── *<CaseID>*_MLO_decay1.nii[.gz]
 ```
 
 To rebuild and verify the lossless checkpoint store locally:
