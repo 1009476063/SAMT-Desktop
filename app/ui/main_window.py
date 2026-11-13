@@ -5,15 +5,18 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import (
+    QSize, Qt, QThread, QThreadPool, QTimer, QUrl, Signal, Slot,
+)
 from PySide6.QtGui import (
-    QIcon, QKeySequence, QPainter, QPixmap, QShortcut, QTextOption,
+    QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap,
+    QShortcut, QTextOption,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
     QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTableWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QTableWidget,
     QTextBrowser, QToolButton,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -36,6 +39,7 @@ from core.clinical_table import (  # noqa: E402
 )
 from ui.clinical_import_dialog import ClinicalImportDialog  # noqa: E402
 from ui.image_preview import ImagePreviewError, preview_pixmap  # noqa: E402
+from ui.image_viewer import ImageVolumeViewer, input_display_name  # noqa: E402
 from ui.theme import COLORS  # noqa: E402
 
 if TYPE_CHECKING:
@@ -534,6 +538,7 @@ class MainWindow(QMainWindow):
             browse = self._tracked(QPushButton(), "common.browse")
             browse.setFixedWidth(86)
             browse.clicked.connect(lambda _, e=edit: self._pick_nifti(e))
+            edit.textChanged.connect(self._update_single_viewer)
             row.addWidget(edit, 1)
             row.addWidget(browse)
             files_form.addRow(self._tracked(QLabel(), label_key), row)
@@ -679,10 +684,37 @@ class MainWindow(QMainWindow):
         self.preview_selector = self._tracked(
             QPushButton(), "common.preview")
         self.preview_selector.clicked.connect(self._show_image_preview)
+        self.viewer_btn = self._tracked(
+            QPushButton(), "viewer.open")
+        self.viewer_btn.setToolTip(self.i18n.tr("viewer.open_hint"))
+        self.viewer_btn.clicked.connect(self._open_single_viewer)
         self.preview_shape = _caption("")
         preview_row.addWidget(self.preview_selector)
+        preview_row.addWidget(self.viewer_btn)
         preview_row.addWidget(self.preview_shape, 1)
         layout.addLayout(preview_row)
+        self.single_viewer_panel = QFrame()
+        self.single_viewer_panel.setProperty("role", "subpanel")
+        viewer_layout = QVBoxLayout(self.single_viewer_panel)
+        viewer_layout.setContentsMargins(10, 8, 10, 8)
+        viewer_layout.setSpacing(6)
+        self.single_viewer_header = _caption("")
+        viewer_layout.addWidget(self.single_viewer_header)
+        self.single_plane_combo = QComboBox()
+        for orientation in ("axial", "coronal", "sagittal"):
+            self.single_plane_combo.addItem(
+                self.i18n.tr("viewer.plane." + orientation), orientation)
+        self.single_plane_combo.currentIndexChanged.connect(
+            self._refresh_single_viewer)
+        viewer_layout.addWidget(self.single_plane_combo)
+        self.single_slice_slider = QSlider(Qt.Horizontal)
+        self.single_slice_slider.valueChanged.connect(
+            self._refresh_single_viewer)
+        viewer_layout.addWidget(self.single_slice_slider)
+        self.single_slice_label = _caption("")
+        viewer_layout.addWidget(self.single_slice_label)
+        self.single_viewer_panel.setVisible(False)
+        layout.addWidget(self.single_viewer_panel)
         layout.addWidget(_divider())
         layout.addWidget(self._tracked(
             _section_label(""), "single.result"))
@@ -732,6 +764,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.run_log)
         actions = QHBoxLayout()
         actions.addStretch(1)
+        self.single_result_open_files_btn = self._tracked(
+            QPushButton(), "viewer.open_files")
+        self.single_result_open_files_btn.setEnabled(False)
+        self.single_result_open_files_btn.clicked.connect(
+            self._open_result_case_files)
+        actions.addWidget(self.single_result_open_files_btn)
         self.single_export_btn = self._tracked(QPushButton(), "single.export")
         self.single_export_btn.setEnabled(False)
         self.single_export_btn.clicked.connect(self.export_single)
@@ -759,6 +797,104 @@ class MainWindow(QMainWindow):
         self.preview_image.setPixmap(pixmap)
         self.preview_shape.setText(self.i18n.tr(
             "single.preview_shape", shape=shape))
+
+    def _open_single_viewer(self):
+        sources = {}
+        hinted = False
+        for key, edit in self.file_edits.items():
+            path = edit.text().strip()
+            if path and Path(path).is_file():
+                sources[key] = path
+                hinted = True
+        if not hinted:
+            self._pick_nifti(self.file_edits["dce_n4"])
+            path = self.file_edits["dce_n4"].text().strip()
+            if not path or not Path(path).is_file():
+                return
+            sources["dce_n4"] = path
+        try:
+            viewer = ImageVolumeViewer(
+                self.i18n, sources, initial_key=next(iter(sources)),
+                parent=self)
+            viewer.exec()
+        except (ImagePreviewError, OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self, self.i18n.tr("common.notice"),
+                self.i18n.tr("common.preview_failed", error=str(exc)))
+
+    def _update_single_viewer(self):
+        for key, edit in self.file_edits.items():
+            path = edit.text().strip()
+            if path and Path(path).is_file():
+                self._single_viewer_key = key
+                self._single_cached_path = path
+                self._single_volume = None
+                break
+        else:
+            self.single_viewer_panel.setVisible(False)
+            return
+        self.single_viewer_panel.setVisible(True)
+        self._refresh_single_viewer()
+
+    def _refresh_single_viewer(self, *_args):
+        key = getattr(self, "_single_viewer_key", None)
+        edit = self.file_edits.get(key)
+        if edit is None or not edit.text() or not Path(edit.text()).is_file():
+            self.single_viewer_panel.setVisible(False)
+            return
+        try:
+            if getattr(self, "_single_cached_path", "") != edit.text():
+                self._single_cached_path = edit.text()
+                self._single_volume = None
+            if getattr(self, "_single_volume", None) is None:
+                from ui.image_preview import read_volume
+
+                self._single_volume = read_volume(edit.text())
+                self.single_slice_slider.blockSignals(True)
+                self.single_slice_slider.setRange(
+                    0, self._single_volume.shape[0] - 1
+                    if len(self._single_volume.shape) == 3 else 0)
+                self.single_slice_slider.setValue(
+                    self.single_slice_slider.maximum() // 2)
+                self.single_slice_slider.blockSignals(False)
+            orientation = self.single_plane_combo.currentData()
+            extent = self._single_volume.shape
+            if len(extent) == 3:
+                max_index = {
+                    "axial": extent[0],
+                    "coronal": extent[1],
+                    "sagittal": extent[2],
+                }[orientation] - 1
+            else:
+                max_index = 0
+            if self.single_slice_slider.maximum() != max_index:
+                self.single_slice_slider.blockSignals(True)
+                self.single_slice_slider.setRange(0, max_index)
+                self.single_slice_slider.setValue(max_index // 2)
+                self.single_slice_slider.blockSignals(False)
+            updated = self._single_volume.plane(
+                orientation, self.single_slice_slider.value())
+        except (ImagePreviewError, OSError, ValueError, ImportError) as exc:
+            self.single_viewer_header.setText(self.i18n.tr(
+                "common.preview_failed", error=str(exc)))
+            return
+        self.single_viewer_panel.setVisible(True)
+        self.single_viewer_header.setText(self.i18n.tr(
+            "viewer.source", name=input_display_name(self.i18n, key)))
+        image = QImage(
+            updated.gray.tobytes(), updated.gray.shape[1],
+            updated.gray.shape[0], updated.gray.shape[1],
+            QImage.Format_Grayscale8).copy()
+        self.preview_image.setPixmap(QPixmap.fromImage(image).scaled(
+            max(320, self.preview_image.width() - 20),
+            max(220, self.preview_image.height() - 20),
+            Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.single_slice_label.setText(self.i18n.tr(
+            "viewer.slice", current=updated.index + 1,
+            total=updated.max_index + 1,
+            shape=" × ".join(str(value) for value in updated.shape),
+            plane=self.i18n.tr(
+                "viewer.plane." + self.single_plane_combo.currentData())))
 
     @staticmethod
     def _probability_bar(color: str) -> QProgressBar:
@@ -808,8 +944,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(controls)
         row.setContentsMargins(18, 14, 18, 14)
         row.setSpacing(10)
-        self.batch_dir_edit = QLineEdit(
-            self.settings.data.get("last_data_dir", ""))
+        self.settings.data.pop("last_data_dir", None)
+        self.batch_dir_edit = QLineEdit()
         self.batch_dir_edit.setPlaceholderText(self.i18n.tr("batch.dir_hint"))
         browse = self._tracked(QPushButton(), "common.browse")
         browse.clicked.connect(self._pick_data_dir)
@@ -865,15 +1001,69 @@ class MainWindow(QMainWindow):
             "batch.column_pred", "common.files"))
         self.batch_table.verticalHeader().setVisible(False)
         self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.batch_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch)
+        batch_header = self.batch_table.horizontalHeader()
+        batch_header.setSectionResizeMode(QHeaderView.Interactive)
+        for column, width in enumerate((120, 110, 105, 220, 120, 120, 100,
+                                        115)):
+            self.batch_table.setColumnWidth(column, width)
+        batch_header.setSectionResizeMode(3, QHeaderView.Stretch)
         self.batch_table.setAlternatingRowColors(True)
-        self.batch_table.setMinimumHeight(320)
+        self.batch_table.setMinimumHeight(220)
+        self.batch_table.itemSelectionChanged.connect(
+            self._refresh_batch_summary)
         root.addWidget(self.batch_table, 1)
+        self.batch_result_panel = _panel()
+        result_layout = QGridLayout(self.batch_result_panel)
+        result_layout.setContentsMargins(18, 14, 18, 14)
+        result_layout.setHorizontalSpacing(18)
+        result_layout.setVerticalSpacing(6)
+        self.batch_result_title = self._tracked(
+            _section_label(""), "batch.result_title")
+        result_layout.addWidget(self.batch_result_title, 0, 0, 1, 4)
+        result_layout.addWidget(
+            self._tracked(_caption(""), "single.prob_neg"), 1, 0)
+        result_layout.addWidget(
+            self._tracked(_caption(""), "single.prob_pos"), 1, 1)
+        result_layout.addWidget(
+            self._tracked(_caption(""), "single.prediction"), 1, 2)
+        result_layout.addWidget(
+            self._tracked(_caption(""), "batch.result_checkpoints"), 1, 3)
+        self.batch_summary_negative = QLabel("--")
+        self.batch_summary_positive = QLabel("--")
+        self.batch_summary_prediction = QLabel("--")
+        self.batch_summary_folds = QLabel("--")
+        for label in (self.batch_summary_negative,
+                      self.batch_summary_positive):
+            label.setStyleSheet(
+                "font-size: 15pt; font-weight: 600; color: {};".format(
+                    COLORS["accent"]))
+        self.batch_summary_prediction.setStyleSheet(
+            "font-size: 12pt; font-weight: 600;")
+        result_layout.addWidget(self.batch_summary_negative, 2, 0)
+        result_layout.addWidget(self.batch_summary_positive, 2, 1)
+        result_layout.addWidget(self.batch_summary_prediction, 2, 2)
+        result_layout.addWidget(self.batch_summary_folds, 2, 3)
+        self.batch_result_panel.setVisible(False)
+        root.addWidget(self.batch_result_panel)
+        viewer_actions = QHBoxLayout()
+        self.batch_open_files_btn = self._tracked(
+            QPushButton(), "viewer.open_files")
+        self.batch_open_files_btn.setToolTip(
+            self.i18n.tr("viewer.open_files_hint"))
+        self.batch_open_files_btn.clicked.connect(
+            self._open_selected_case_files)
+        self.batch_summary_note = _caption("")
+        viewer_actions.addWidget(self.batch_open_files_btn)
+        viewer_actions.addWidget(self.batch_summary_note, 1)
+        self.batch_open_files_btn.setVisible(False)
+        self.batch_summary_note.setVisible(False)
+        root.addLayout(viewer_actions)
+        self.batch_files_row = viewer_actions
         progress_row = QHBoxLayout()
         self.batch_progress = QProgressBar()
-        self.batch_progress.setRange(0, 1)
+        self.batch_progress.setRange(0, 100)
         self.batch_progress.setValue(0)
+        self.batch_progress.setFormat("%p%")
         self.batch_status = self._tracked(_caption(""), "batch.empty")
         progress_row.addWidget(self.batch_progress, 1)
         progress_row.addWidget(self.batch_status, 2)
@@ -1131,8 +1321,6 @@ class MainWindow(QMainWindow):
             self, self.i18n.tr("batch.select_dir"), default)
         if path:
             self.batch_dir_edit.setText(path)
-            self.settings.data["last_data_dir"] = path
-            self.settings.save()
 
     def _choose_models_dir(self):
         path = QFileDialog.getExistingDirectory(
@@ -1147,6 +1335,26 @@ class MainWindow(QMainWindow):
     def _quick_toggle_language(self):
         new_lang = "en-US" if self.i18n.lang == "zh-CN" else "zh-CN"
         self._apply_language(new_lang, reload_engine=False)
+
+    def _retranslate_viewers(self):
+        orientation = self.single_plane_combo.currentData()
+        self.single_plane_combo.blockSignals(True)
+        self.single_plane_combo.clear()
+        for name in ("axial", "coronal", "sagittal"):
+            self.single_plane_combo.addItem(
+                self.i18n.tr("viewer.plane." + name), name)
+        index = self.single_plane_combo.findData(orientation)
+        self.single_plane_combo.setCurrentIndex(max(0, index))
+        self.single_plane_combo.blockSignals(False)
+        self.viewer_btn.setToolTip(self.i18n.tr("viewer.open_hint"))
+        self.batch_open_files_btn.setToolTip(
+            self.i18n.tr("viewer.open_files_hint"))
+        for row in range(self.batch_table.rowCount()):
+            button = self.batch_table.cellWidget(row, 7)
+            if isinstance(button, QPushButton):
+                button.setText(self.i18n.tr("viewer.open"))
+                button.setToolTip(self.i18n.tr("viewer.open_hint"))
+        self._refresh_batch_actions()
 
     def _apply_language(self, language: str, reload_engine: bool = False):
         """Translate every live widget immediately; never recreate the window."""
@@ -1213,9 +1421,11 @@ class MainWindow(QMainWindow):
         self._refresh_version_label()
         self._refresh_coverage()
         self._refresh_structure_label()
+        self._retranslate_viewers()
         self._refresh_batch_result_translations()
         self._refresh_batch_rows()
         self._retranslate_result()
+        self._refresh_batch_summary()
         _ = reload_engine  # Kept for API symmetry; callers reload explicitly.
 
     def _refresh_version_label(self):
@@ -1240,9 +1450,50 @@ class MainWindow(QMainWindow):
             self._show_single_result(result)
 
     def _refresh_batch_result_translations(self):
-        for values in self._batch_result_rows.values():
-            values[6] = self.i18n.tr(
-                "values." + values[9], fallback=values[9])
+        result_by_id = {result.case_id: result
+                        for result in self.batch_results}
+        for case_id, values in self._batch_result_rows.items():
+            result = result_by_id.get(case_id)
+            if result is not None:
+                values[6] = self.i18n.tr(
+                    "values." + result.prediction,
+                    fallback=result.prediction)
+
+    def _selected_batch_result(self):
+        row = self.batch_table.currentRow()
+        if row < 0:
+            row = 0
+        item = self.batch_table.item(row, 0)
+        if item is None:
+            return None
+        case_id = item.text()
+        return next((result for result in self.batch_results
+                     if result.case_id == case_id), None)
+
+    def _refresh_batch_summary(self):
+        result = self._selected_batch_result()
+        root = self._selected_case_root()
+        self.batch_open_files_btn.setVisible(root is not None)
+        self.batch_summary_note.setVisible(root is not None)
+        self.batch_open_files_btn.setEnabled(root is not None)
+        self.batch_summary_note.setText(self.i18n.tr(
+            "batch.files_available",
+            name=root.name if root is not None else ""))
+        if result is None:
+            self.batch_result_panel.setVisible(False)
+            return
+        self.batch_result_panel.setVisible(True)
+        self.batch_summary_negative.setText(
+            "{:.6f} · {:.2f}%".format(
+                result.prob_neg, result.prob_neg * 100))
+        self.batch_summary_positive.setText(
+            "{:.6f} · {:.2f}%".format(
+                result.prob_pos, result.prob_pos * 100))
+        self.batch_summary_prediction.setText(self.i18n.tr(
+            "values." + result.prediction, fallback=result.prediction))
+        self.batch_summary_folds.setText(
+            "{} / 10".format(sum(
+                value is not None for value in result.fold_probs.values())))
 
     def _refresh_coverage(self):
         if not hasattr(self, "coverage_bar"):
@@ -1380,6 +1631,8 @@ class MainWindow(QMainWindow):
         self._navigate(0)
 
     def run_single(self):
+        from core.engine import validate_case
+
         if self.engine is None or self._busy:
             return
         case = self._single_case()
@@ -1399,6 +1652,9 @@ class MainWindow(QMainWindow):
         from core.engine import PatientCase  # noqa: F401 - annotation boundary
         self._busy = True
         self._fold_progress_count = 0
+        self._inference_cases = list(cases)
+        self._inference_single = single
+        self._completed_case_count = 0
         self.single_run_btn.setEnabled(False)
         self.batch_run_btn.setEnabled(False)
         self.batch_export_btn.setEnabled(False)
@@ -1407,8 +1663,12 @@ class MainWindow(QMainWindow):
         self.single_progress.setVisible(True)
         self.single_progress.setRange(0, self.engine.checkpoint_count)
         self.single_progress.setValue(0)
-        self.batch_progress.setRange(0, len(cases))
+        self.batch_progress.setRange(0, 100)
         self.batch_progress.setValue(0)
+        self.batch_result_panel.setVisible(False)
+        self._set_status(
+            self.batch_status, "batch.started", total=len(cases),
+            case=cases[0].case_id if cases else "")
         self._set_status(self.run_log, "single.stage_done")
         self._active_thread = InferThread(self.engine, cases, self)
         self._active_thread.progress_text.connect(self._on_infer_progress)
@@ -1427,20 +1687,44 @@ class MainWindow(QMainWindow):
             self._fold_progress_count += 1
             done = min(self._fold_progress_count, self.single_progress.maximum())
             self.single_progress.setValue(done)
+            total_folds = max(
+                len(getattr(self, "_inference_cases", ()))
+                * self.single_progress.maximum(), 1)
+            elapsed_folds = (
+                self._completed_case_count * self.single_progress.maximum()
+                + done)
+            percent = min(100, round(elapsed_folds * 100 / total_folds))
+            self.batch_progress.setValue(percent)
+            case_id = ""
+            if getattr(self, "_inference_cases", None):
+                case_id = self._inference_cases[min(
+                    self._completed_case_count,
+                    len(self._inference_cases) - 1)].case_id
+            self._set_status(
+                self.batch_status, "batch.fold_progress",
+                percent=percent, fold=done, folds=self.single_progress.maximum(),
+                case=case_id)
             self._set_status(
                 self.run_log, "single.fold_done", done=done,
                 total=self.single_progress.maximum())
         elif text.startswith("preprocess:") or text == "preprocess":
             self._fold_progress_count = 0
             self.single_progress.setValue(0)
+            case_id = text.partition(":")[2]
+            self._set_status(
+                self.batch_status, "batch.preprocessing", case=case_id)
             self._set_status(self.run_log, "single.preprocess_done")
         elif text.startswith("case:"):
             parts = text.split(":")
             if len(parts) == 4:
-                self.batch_progress.setValue(int(parts[2]))
+                self._completed_case_count = int(parts[2])
+                percent = min(
+                    100, round(self._completed_case_count * 100
+                               / max(int(parts[3]), 1)))
+                self.batch_progress.setValue(percent)
                 self._set_status(
-                    self.batch_status, "batch.progress", done=parts[2],
-                    total=parts[3], case=parts[1])
+                    self.batch_status, "batch.case_complete", done=parts[2],
+                    total=parts[3], case=parts[1], percent=percent)
 
     @Slot(list)
     def _inference_done(self, results, single: bool):
@@ -1454,11 +1738,19 @@ class MainWindow(QMainWindow):
         self.batch_progress.setValue(self.batch_progress.maximum())
         if single:
             self._show_single_result(results[0])
+            self._set_status(
+                self.batch_status, "batch.single_complete",
+                case=results[0].case_id if results else "")
         else:
             self.batch_results = results
             labels = {c.case_id: c.label_dir for c in self.batch_cases}
+            from core.engine import scan_results_to_dataframe
+
             self._last_df = scan_results_to_dataframe(results, labels)
             self._populate_batch_results(results)
+            self._refresh_batch_rows()
+            self._set_status(
+                self.batch_status, "batch.complete", n=len(results))
         self._refresh_batch_actions()
         self._dispose_active_thread()
 
@@ -1480,6 +1772,7 @@ class MainWindow(QMainWindow):
                 COLORS["positive"] if result.prediction == "Positive"
                 else COLORS["negative"]))
         self.single_export_btn.setEnabled(True)
+        self.single_result_open_files_btn.setEnabled(True)
         self.fold_table.setRowCount(len(result.fold_probs))
         for row, (name, probs) in enumerate(result.fold_probs.items()):
             self.fold_table.setItem(row, 0, QTableWidgetItem(name))
@@ -1498,11 +1791,27 @@ class MainWindow(QMainWindow):
             self.i18n.tr("common.filter.csv"))
         if path:
             labels = {self._last_single_result.case_id: "Positive"}
+            from core.engine import scan_results_to_dataframe
+
             scan_results_to_dataframe(
                 [self._last_single_result], labels).to_csv(
                     path, index=False, encoding="utf-8-sig")
             self.settings.data["last_export_dir"] = str(Path(path).parent)
             self.settings.save()
+
+    def _open_result_case_files(self):
+        result = getattr(self, "_last_single_result", None)
+        if result is None:
+            return
+        roots = {}
+        for key, edit in self.file_edits.items():
+            path = edit.text().strip()
+            if path and Path(path).is_file():
+                roots[key] = path
+        if not roots:
+            return
+        parent = Path(next(iter(roots.values()))).parent
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
 
     # -------------------------------------------------------- batch flow
     def scan_batch(self):
@@ -1524,6 +1833,7 @@ class MainWindow(QMainWindow):
         self.batch_results = []
         self._last_df = None
         self._batch_result_rows = {}
+        self.batch_result_panel.setVisible(False)
         self.batch_table.setRowCount(len(self._case_rows))
         self._refresh_batch_rows()
         if problems:
@@ -1564,6 +1874,56 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.batch_table.setItem(
                     index, column, QTableWidgetItem(value))
+            self._attach_batch_viewer(index, item.case_root)
+
+    def _attach_batch_viewer(self, row: int, case_root: Path):
+        button = QPushButton(self.i18n.tr("viewer.open"))
+        button.setProperty("role", "small")
+        button.setToolTip(self.i18n.tr("viewer.open_hint"))
+        button.clicked.connect(
+            lambda _, root=Path(case_root): self._open_case_viewer(root))
+        self.batch_table.setCellWidget(row, 7, button)
+
+    def _open_case_viewer(self, case_root: Path):
+        from core.experiment_contract import REQUIRED_INPUT_GLOBS
+        import glob
+
+        sources = {}
+        case_id = Path(case_root).name
+        for key, pattern in REQUIRED_INPUT_GLOBS:
+            matches = sorted(glob.glob(str(Path(case_root) / pattern.format(
+                id=case_id))))
+            if matches:
+                sources[key] = matches[0]
+        if not sources:
+            QMessageBox.information(
+                self, self.i18n.tr("common.notice"),
+                self.i18n.tr("viewer.no_images"))
+            return
+        try:
+            viewer = ImageVolumeViewer(
+                self.i18n, sources, initial_key=next(iter(sources)), parent=self)
+            viewer.exec()
+        except (ImagePreviewError, OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self, self.i18n.tr("common.notice"),
+                self.i18n.tr("common.preview_failed", error=str(exc)))
+
+    def _selected_case_root(self) -> Path | None:
+        row = self.batch_table.currentRow()
+        if row < 0:
+            row = 0
+        item = self.batch_table.item(row, 0)
+        if item is None:
+            return None
+        case = next((case for case in self.batch_cases
+                     if case.case_id == item.text()), None)
+        return Path(case.case_root) if case is not None else None
+
+    def _open_selected_case_files(self):
+        root = self._selected_case_root()
+        if root is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     def _refresh_batch_actions(self):
         from core.engine import validate_case
@@ -1600,18 +1960,14 @@ class MainWindow(QMainWindow):
             values = {
                 4: "{:.6f}".format(result.prob_neg),
                 5: "{:.6f}".format(result.prob_pos),
-                6: "",
-                7: str(len(result.fold_probs)),
-                9: result.prediction,
+                6: self.i18n.tr("values." + result.prediction,
+                                fallback=result.prediction),
             }
             self._batch_result_rows[result.case_id] = values
-            values[6] = self.i18n.tr("values." + result.prediction,
-                                     fallback=result.prediction)
             for column, value in values.items():
-                if column == 9:
-                    continue
                 self.batch_table.setItem(
                     row, column, QTableWidgetItem(value))
+        self._refresh_batch_summary()
 
     def export_batch(self):
         if self._last_df is None:
@@ -1635,6 +1991,7 @@ class MainWindow(QMainWindow):
         self.single_run_btn.setEnabled(True)
         self.apply_settings_btn.setEnabled(True)
         self._refresh_batch_actions()
+        self.batch_progress.setFormat("%p%")
         self._set_status(self.status_label, "status.error")
         if message == "error.no_checkpoints":
             self._set_status(self.run_log, "error.no_checkpoints")

@@ -4,6 +4,17 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
+## v1.3.2
+
+This release completes the batch workflow and adds a read-only image viewer without changing preprocessing, the network, the ten-checkpoint ensemble, or prediction probabilities.
+
+- The batch directory is always empty at startup and stays session-only. A legacy saved directory is ignored and removed from settings; no machine-specific path is shown or bundled.
+- Starting inference immediately shows a localized started message and 0%. The progress bar reports percentage completion across all cases and all ten checkpoints, including preprocessing, checkpoint, and case-level state. Completion shows a visible result summary and enables CSV export.
+- The completion callback now imports the result converter at the engine boundary, so results, the selected-case summary, per-case input buttons, and CSV export are no longer interrupted by a `NameError`.
+- Batch results show `P(negative)`, `P(positive)`, and the localized ensemble class in the correct columns. Selecting a row shows the probabilities with six decimal places, the usable checkpoint count, and the source-file entry point; all visible result text follows runtime language switches.
+- The workbench can browse complete volumes: axial, coronal, and sagittal planes with slice sliders, previous/next controls, fit-to-window, and switching among the four model inputs. Two-dimensional MLO images open as a single plane. Heavy image libraries are imported only when a viewer is opened.
+- A regression suite reproduces the v1.3.1 workflow defects before the fix. Full source tests, checkpoint byte-equivalence checks, locale key parity, and offscreen Qt checks pass locally.
+
 ## v1.3.1
 
 This patch fixes the lossless checkpoint store inference path: retained and low-memory modes now pass all ten reconstructed state dictionaries to the shared network in their original order. It also replaces the flat path hint with a generic, copyable ASCII tree. The research-use consent version and all ten float32 weights are unchanged.

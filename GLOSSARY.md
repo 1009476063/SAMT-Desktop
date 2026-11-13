@@ -44,6 +44,12 @@ The count of nonempty experiment columns in a CP.xlsx row or single-case form be
 ## Image preview
 A read-only middle-slice rendering of a selected NIfTI input for visual verification. It never writes to the image and is not part of preprocessing.
 
+## Image viewer
+A read-only, interactive view of one complete NIfTI input through axial, coronal, and sagittal planes and their slices. It never writes to the image and is not part of preprocessing.
+
+## Batch progress
+The percentage of completed checkpoint predictions across all queued Cases, shown from the start of inference through completion.
+
 ## Clinical table match
 The unique CP.xlsx row whose ID equals the selected case. Conflicting duplicate rows require operator correction; an empty case ID is allowed only when the workbook has one row.
 

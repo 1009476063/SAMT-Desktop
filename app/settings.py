@@ -28,7 +28,6 @@ DEFAULTS = {
     "models_dir": "",  # empty = bundled models dir
     "device": "cpu",  # CPU is the exact-reproduction reference
     "low_memory": False,
-    "last_data_dir": "",
     "last_export_dir": "",
     "accepted_disclaimer_version": "",
 }
@@ -43,6 +42,7 @@ class Settings:
                 self.data.update(json.loads(self.path.read_text("utf-8")))
             except Exception:
                 pass
+        self.data.pop("last_data_dir", None)
 
     def save(self):
         self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), "utf-8")

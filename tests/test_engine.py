@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -10,13 +11,13 @@ from core.engine import (  # noqa: E402
 
 
 def _sample_root() -> Path:
-    # Smoke source: original package sample cases, when present on the dev machine/CI runner.
-    return Path("/Users/tanxiang/同步空间/TanXiang/SAMT/NSLN")
+    configured = os.environ.get("SAMT_SAMPLE_ROOT", "").strip()
+    return Path(configured) if configured else None
 
 
 def test_discover_sample_tree():
     root = _sample_root()
-    if not root.is_dir():
+    if root is None or not root.is_dir():
         return  # sample data not available; discovery logic is covered elsewhere
     cases, problems = discover_cases(root)
     assert problems == []
