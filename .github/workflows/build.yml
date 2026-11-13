@@ -121,6 +121,28 @@ jobs:
           hdiutil create -volname "SAMT Desktop" \
             -srcfolder SAMT-Desktop.app -ov -format UDZO \
             SAMT-Desktop-macOS-arm64.dmg
+          mount_dir="$(mktemp -d)"
+          trap 'hdiutil detach "$mount_dir" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" \
+            SAMT-Desktop-macOS-arm64.dmg
+          export SAMT_DMG_MOUNT="$mount_dir"
+          test -d "$mount_dir/SAMT-Desktop.app/Contents/MacOS"
+          test -f "$mount_dir/SAMT-Desktop.app/Contents/Info.plist"
+          test -d "$mount_dir/SAMT-Desktop.app/Contents/Resources/PIL"
+          test -d "$mount_dir/SAMT-Desktop.app/Contents/Resources/torchvision"
+          test -f "$mount_dir/SAMT-Desktop.app/Contents/Resources/models/samt-checkpoints.zip"
+          python - <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+          info = plistlib.loads(Path(
+              os.environ["SAMT_DMG_MOUNT"],
+              "SAMT-Desktop.app/Contents/Info.plist").read_bytes())
+          assert info["CFBundleShortVersionString"] == "1.3.0", info
+          assert info["CFBundlePackageType"] == "APPL", info
+          PY
+          hdiutil detach "$mount_dir" >/dev/null
+          trap - EXIT
           ditto -c -k --keepParent SAMT-Desktop.app \
             SAMT-Desktop-macOS-arm64-app.zip
 
