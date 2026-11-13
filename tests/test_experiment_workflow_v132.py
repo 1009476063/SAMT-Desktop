@@ -70,13 +70,6 @@ class _DeferredInferenceThread:
         return None
 
 
-@pytest.fixture(scope="module")
-def qt_app():
-    from PySide6.QtWidgets import QApplication
-
-    return QApplication.instance() or QApplication([])
-
-
 def _window(monkeypatch, settings):
     import ui.main_window as main_window
 
