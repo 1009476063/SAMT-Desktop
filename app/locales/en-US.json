@@ -1,7 +1,7 @@
 {
   "app.name": "SAMT Breast Lymph Node Metastasis Prediction System (Research)",
   "app.short": "SAMT Desktop",
-  "app.version": "1.4.0",
+  "app.version": "1.4.1",
   "app.subtitle": "Multimodal NSLN research workbench",
   "disclaimer.title": "Research Use Consent",
   "disclaimer.kicker": "Read before continuing",

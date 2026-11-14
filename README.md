@@ -4,6 +4,15 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
+## v1.4.1
+
+This patch polishes the research workbench controls and layout without changing preprocessing, the network, the ten-checkpoint ensemble, or prediction probabilities.
+
+- Clinical and pathology dropdowns now have themed borders, vector chevrons, hover/focus states, and localized `Select…` placeholders. Their fields no longer expand to the width of the longest encoded option.
+- The batch `View images` action is constrained to a fixed 46-pixel row and centered inside its Files cell at every window width. It no longer overlaps adjacent rows or escapes the column.
+- The single-case page switches to a stacked layout below 1280 pixels so image inputs, forms, and previews remain fully reachable without clipped controls. Wide screens retain the two-column workspace.
+- Table headers, scrollbars, status text, and disabled controls received consistent spacing and contrast updates.
+
 ## v1.4.0
 
 This release adds source-image preparation, six-decimal borderline-result reporting, a blank default clinical form, and a restyled workbench. The network, ten-checkpoint ensemble, and supplied-input inference probabilities are unchanged.

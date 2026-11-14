@@ -93,7 +93,7 @@ entry = importlib.util.module_from_spec(spec)
 sys.modules["samt_entry"] = entry
 spec.loader.exec_module(entry)
 assert entry.main() == 0
-assert ("version", "1.4.0") in calls
+assert ("version", "1.4.1") in calls
 assert "gate" in calls and "eventloop" not in calls
 assert not [m for m in ("core.engine", "pandas", "numpy", "torch", "PIL")
             if m in sys.modules]

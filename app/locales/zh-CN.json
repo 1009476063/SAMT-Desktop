@@ -1,7 +1,7 @@
 {
   "app.name": "前哨淋巴结阳性乳腺癌非前哨淋巴结转移预测系统（研究用途）",
   "app.short": "SAMT Desktop",
-  "app.version": "1.4.0",
+  "app.version": "1.4.1",
   "app.subtitle": "多模态 NSLN 研究推理工作台",
   "disclaimer.title": "研究用途知情同意声明",
   "disclaimer.kicker": "开始使用前请阅读",
