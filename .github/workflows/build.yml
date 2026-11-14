@@ -201,10 +201,15 @@ jobs:
           size="$(stat -c%s "$archive")"
           if [ "$size" -lt 2147483648 ]; then
             cp "$archive" "release-assets/$archive"
+            cat > release-assets/README-ASSETS.txt <<'TXT'
+          SAMT Desktop release assets
+
+          Extract SAMT-Desktop-Windows-x64.zip and run SAMT-Desktop/SAMT-Desktop.exe.
+          Open SAMT-Desktop-macOS-arm64.dmg and drag SAMT-Desktop.app to Applications.
+          TXT
           else
             split -b 1500M -d -a 2 "$archive" "release-assets/$archive.part"
-          fi
-          cat > release-assets/README-ASSETS.txt <<'TXT'
+            cat > release-assets/README-ASSETS.txt <<'TXT'
           SAMT Desktop release assets
 
           Files ending in .partNN are 1500 MiB split parts of one ZIP archive.
@@ -223,6 +228,7 @@ jobs:
             }
             $out.Dispose()
           TXT
+          fi
           gh release upload "${GITHUB_REF_NAME}" release-assets/* \
             --repo "$GITHUB_REPOSITORY" --clobber
 
