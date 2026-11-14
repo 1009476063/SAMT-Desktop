@@ -20,9 +20,10 @@ def main() -> int:
     from i18n import I18n
     from settings import Settings
     from ui.main_window import MainWindow, ResearchUseGate, has_current_consent
-    from ui.theme import application_font, palette, stylesheet
+    from ui.theme import SamtStyle, application_font, palette, stylesheet
 
     app = QApplication(sys.argv)
+    app.setStyle(SamtStyle())
     app.setApplicationName("SAMT Desktop")
     app.setApplicationVersion("1.4.0")
     app.setFont(application_font())

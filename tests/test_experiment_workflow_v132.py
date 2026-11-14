@@ -134,7 +134,7 @@ def test_batch_begin_and_fold_signals_drive_visible_percent_progress(
 
 def test_completed_batch_renders_results_and_enables_csv(
         qt_app, monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QPushButton, QTableWidgetItem
+    from PySide6.QtWidgets import QApplication, QPushButton, QTableWidgetItem
     from core.engine import PatientCase, ScanResult
     from core.experiment_contract import CLINICAL_COLUMNS, PATHOLOGY_COLUMNS
 
@@ -168,8 +168,12 @@ def test_completed_batch_renders_results_and_enables_csv(
     window.batch_table.setRowCount(1)
     window.batch_table.setItem(0, 0, QTableWidgetItem("patient_D"))
     window._refresh_batch_rows()
+    window.show()
+    window._navigate(1)
     window._dispose_active_thread = lambda: None
     window._inference_done([result], single=False)
+    QApplication.processEvents()
+    QApplication.processEvents()
 
     assert window._last_df is not None
     assert len(window._last_df) == 1
@@ -177,7 +181,22 @@ def test_completed_batch_renders_results_and_enables_csv(
     assert window.batch_table.item(0, 4).text() == "0.186543"
     assert window.batch_table.item(0, 5).text() == "0.813457"
     assert window.batch_table.item(0, 6).text() == "Positive"
-    assert window.batch_table.cellWidget(0, 7).findChild(QPushButton)
+    holder = window.batch_table.cellWidget(0, 7)
+    button = holder.findChild(QPushButton)
+    assert button
+    QApplication.processEvents()
+    cell = window.batch_table.visualRect(
+        window.batch_table.model().index(0, 7))
+    position = button.mapTo(window.batch_table.viewport(),
+                            __import__("PySide6.QtCore", fromlist=["QPoint"]).QPoint(0, 0))
+    assert cell.left() <= position.x()
+    assert cell.top() <= position.y()
+    assert abs((position.x() + button.width() / 2) -
+               (cell.left() + cell.width() / 2)) <= 1
+    assert abs((position.y() + button.height() / 2) -
+               (cell.top() + cell.height() / 2)) <= 1
+    assert position.x() - cell.left() >= 3
+    assert position.y() - cell.top() >= 3
     assert window.batch_summary_prediction.text() == "Positive"
     assert "0.813457" in window.batch_summary_positive.text()
 

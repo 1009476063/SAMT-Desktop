@@ -17,9 +17,9 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
     QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QTableWidget,
-    QStyle, QTextBrowser, QToolButton,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget,
+    QStyle, QTableWidget, QTableWidgetItem, QTextBrowser, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -567,7 +567,7 @@ class MainWindow(QMainWindow):
     def _build_rail(self) -> QFrame:
         rail = QFrame()
         rail.setProperty("role", "rail")
-        rail.setFixedWidth(214)
+        rail.setFixedWidth(200)
         layout = QVBoxLayout(rail)
         layout.setContentsMargins(14, 20, 14, 18)
         layout.setSpacing(6)
@@ -602,12 +602,15 @@ class MainWindow(QMainWindow):
     def _navigate(self, index: int):
         self.pages.setCurrentIndex(index)
         self.nav_group.button(index).setChecked(True)
+        if index == 1:
+            QTimer.singleShot(0, self._fit_batch_buttons)
 
     @staticmethod
     def _page_scroll(widget: QWidget) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setWidget(widget)
         return scroll
 
@@ -627,15 +630,63 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(24, 20, 24, 24)
         root.setSpacing(12)
         root.addLayout(self._page_heading("single.title", "single.subtitle"))
-        top = QGridLayout()
-        top.setSpacing(12)
-        top.addWidget(self._build_single_input_panel(), 0, 0)
-        top.addWidget(self._build_single_workspace_panel(), 0, 1)
-        top.setColumnStretch(0, 5)
-        top.setColumnStretch(1, 4)
-        root.addLayout(top, 3)
+        self.single_top = QGridLayout()
+        self.single_top.setSpacing(12)
+        self.single_input_panel = self._build_single_input_panel()
+        self.single_workspace_panel = self._build_single_workspace_panel()
+        self.single_top.addWidget(self.single_input_panel, 0, 0)
+        self.single_top.addWidget(self.single_workspace_panel, 0, 1)
+        self.single_top.setColumnStretch(0, 7)
+        self.single_top.setColumnStretch(1, 5)
+        self.single_top.setColumnMinimumWidth(0, 360)
+        self.single_top.setColumnMinimumWidth(1, 300)
+        root.addLayout(self.single_top, 3)
         root.addWidget(self._build_fold_panel(), 1)
-        return self._page_scroll(page)
+        scroll = self._page_scroll(page)
+        QTimer.singleShot(0, self._sync_single_layout)
+        return scroll
+
+    def resizeEvent(self, event):  # noqa: D102, N802
+        super().resizeEvent(event)
+        self._sync_single_layout()
+
+    def showEvent(self, event):  # noqa: D102, N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self._sync_single_layout)
+
+    def _sync_single_layout(self):
+        try:
+            if not hasattr(self, "single_top"):
+                return
+            stacked = self.width() < 1280
+            if getattr(self, "_single_stacked", None) == stacked:
+                return
+            self._single_stacked = stacked
+            for widget in (self.single_input_panel,
+                           self.single_workspace_panel):
+                self.single_top.removeWidget(widget)
+            if stacked:
+                self.single_top.addWidget(self.single_input_panel, 0, 0)
+                self.single_top.addWidget(self.single_workspace_panel, 1, 0)
+                self.single_top.setColumnStretch(0, 1)
+                self.single_top.setColumnStretch(1, 0)
+                self.single_top.setColumnMinimumWidth(1, 0)
+                self.single_input_panel.setSizePolicy(
+                    QSizePolicy.Ignored, QSizePolicy.Preferred)
+                self.single_workspace_panel.setSizePolicy(
+                    QSizePolicy.Expanding, QSizePolicy.Preferred)
+            else:
+                self.single_top.addWidget(self.single_input_panel, 0, 0)
+                self.single_top.addWidget(self.single_workspace_panel, 0, 1)
+                self.single_top.setColumnStretch(0, 7)
+                self.single_top.setColumnStretch(1, 5)
+                self.single_top.setColumnMinimumWidth(1, 300)
+                self.single_input_panel.setSizePolicy(
+                    QSizePolicy.Preferred, QSizePolicy.Preferred)
+                self.single_workspace_panel.setSizePolicy(
+                    QSizePolicy.Ignored, QSizePolicy.Preferred)
+        except RuntimeError:
+            return
 
     def _build_single_input_panel(self) -> QFrame:
         panel = _panel()
@@ -648,6 +699,7 @@ class MainWindow(QMainWindow):
         files_form = QFormLayout()
         files_form.setLabelAlignment(Qt.AlignRight)
         files_form.setSpacing(8)
+        files_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         for key, label_key in [
             ("dce_n4", "single.dce_n4"),
             ("dce_decay", "single.dce_decay"),
@@ -657,21 +709,27 @@ class MainWindow(QMainWindow):
             row = QHBoxLayout()
             edit = QLineEdit()
             edit.setReadOnly(True)
+            edit.setMinimumWidth(0)
             edit.setPlaceholderText(self.i18n.tr("common.missing"))
             browse = self._tracked(QPushButton(), "common.browse")
-            browse.setFixedWidth(86)
+            browse.setFixedWidth(92)
+            browse.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             browse.setIcon(_standard_icon("SP_DirOpenIcon"))
             browse.clicked.connect(lambda _, e=edit: self._pick_nifti(e))
             edit.textChanged.connect(self._update_single_viewer)
             row.addWidget(edit, 1)
             row.addWidget(browse)
-            files_form.addRow(self._tracked(QLabel(), label_key), row)
+            label = self._tracked(QLabel(), label_key)
+            label.setMinimumWidth(0)
+            label.setMaximumWidth(156)
+            files_form.addRow(label, row)
             self.file_edits[key] = edit
         layout.addLayout(files_form)
         layout.addWidget(_divider())
         case_row = QHBoxLayout()
         case_row.addWidget(self._tracked(QLabel(), "single.case_id"))
         self.case_id_edit = QLineEdit()
+        self.case_id_edit.setMinimumWidth(0)
         self.case_id_edit.setPlaceholderText("")
         case_row.addWidget(self.case_id_edit, 1)
         layout.addLayout(case_row)
@@ -700,11 +758,17 @@ class MainWindow(QMainWindow):
         table_row.addWidget(self.import_table_status, 1)
         layout.addLayout(table_row)
         variables = QHBoxLayout()
-        variables.setSpacing(18)
-        variables.addWidget(self._build_form_group(
-            "single.clinical", CLINICAL_COLUMNS), 1)
-        variables.addWidget(self._build_form_group(
-            "single.pathology", PATHOLOGY_COLUMNS), 1)
+        variables.setSpacing(16)
+        clinical = self._build_form_group(
+            "single.clinical", CLINICAL_COLUMNS)
+        pathology = self._build_form_group(
+            "single.pathology", PATHOLOGY_COLUMNS)
+        clinical.setMinimumWidth(0)
+        pathology.setMinimumWidth(0)
+        clinical.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        pathology.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        variables.addWidget(clinical, 1)
+        variables.addWidget(pathology, 1)
         layout.addLayout(variables)
         self.coverage_label = _caption("")
         layout.addWidget(self.coverage_label)
@@ -742,21 +806,30 @@ class MainWindow(QMainWindow):
         section = self._tracked(_section_label(""), title_key)
         layout.addWidget(section)
         form = QFormLayout()
-        form.setSpacing(7)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(7)
         form.setLabelAlignment(Qt.AlignRight)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         for column in columns:
             label_key, values = self._field_spec(column)
             if values:
                 widget = QComboBox()
-                widget.addItem("", "")
+                widget.setSizeAdjustPolicy(
+                    QComboBox.SizeAdjustPolicy.AdjustToContents)
+                widget.addItem(self.i18n.tr("common.select_placeholder"), "")
                 for value in values:
                     widget.addItem(self._value_text(value), value)
             else:
                 widget = QLineEdit()
                 widget.setPlaceholderText("")
+            widget.setMinimumWidth(0)
+            widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             widget.setToolTip(column)
             widget.setAccessibleName(self.i18n.tr(label_key))
             label = self._tracked(QLabel(), label_key)
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            label.setWordWrap(False)
             self._field_labels[column] = label_key
             form.addRow(label, widget)
             self.form_edits[column] = widget
@@ -807,6 +880,8 @@ class MainWindow(QMainWindow):
 
     def _build_single_workspace_panel(self) -> QFrame:
         panel = _panel()
+        panel.setMinimumWidth(300)
+        panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
@@ -816,6 +891,9 @@ class MainWindow(QMainWindow):
             QLabel(), "common.preview_empty")
         self.preview_image.setAlignment(Qt.AlignCenter)
         self.preview_image.setMinimumHeight(220)
+        self.preview_image.setMinimumWidth(0)
+        self.preview_image.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.preview_image.setWordWrap(True)
         self.preview_image.setStyleSheet(
             "background: {}; border: 1px solid {}; border-radius: 5px;"
@@ -1156,7 +1234,7 @@ class MainWindow(QMainWindow):
             Qt.ScrollBarAsNeeded)
         self.structure_browser.setVerticalScrollBarPolicy(
             Qt.ScrollBarAsNeeded)
-        self.structure_browser.setFixedHeight(168)
+        self.structure_browser.setFixedHeight(142)
         tree_panel = QFrame()
         tree_panel.setProperty("role", "tree_panel")
         tree_layout = QVBoxLayout(tree_panel)
@@ -1176,6 +1254,10 @@ class MainWindow(QMainWindow):
             "batch.column_neg", "batch.column_pos",
             "batch.column_pred", "common.files"))
         self.batch_table.verticalHeader().setVisible(False)
+        self.batch_table.verticalHeader().setDefaultSectionSize(46)
+        self.batch_table.verticalHeader().setMinimumSectionSize(46)
+        self.batch_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.Fixed)
         self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         batch_header = self.batch_table.horizontalHeader()
         batch_header.setSectionResizeMode(QHeaderView.Interactive)
@@ -1187,6 +1269,8 @@ class MainWindow(QMainWindow):
         self.batch_table.setColumnWidth(7, 136)
         self.batch_table.setAlternatingRowColors(True)
         self.batch_table.setMinimumHeight(180)
+        self.batch_table.setShowGrid(True)
+        self.batch_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.batch_table.itemSelectionChanged.connect(
             self._refresh_batch_summary)
         root.addWidget(self.batch_table, 1)
@@ -1681,6 +1765,10 @@ class MainWindow(QMainWindow):
             button.setText(self.i18n.tr((
                 "nav.single", "nav.batch", "nav.settings", "nav.about"
             )[index]))
+        for widget in self.form_edits.values():
+            if isinstance(widget, QComboBox) and widget.count():
+                widget.setItemText(
+                    0, self.i18n.tr("common.select_placeholder"))
         self.language_toggle.setToolTip(
             self.i18n.tr("common.switch_language"))
         index = self.language_combo.findData(language)
@@ -2243,6 +2331,8 @@ class MainWindow(QMainWindow):
         self.batch_result_panel.setVisible(False)
         self.batch_table.setRowCount(len(self._case_rows))
         self._refresh_batch_rows()
+        if self._case_rows:
+            self.batch_table.selectRow(0)
         if problems:
             self._set_status(
                 self.batch_status, "batch.scan_problems",
@@ -2265,6 +2355,7 @@ class MainWindow(QMainWindow):
             stale = self.batch_table.cellWidget(stale_row, 7)
             if stale is not None:
                 stale.hide()
+        self.batch_table.verticalHeader().setDefaultSectionSize(46)
         valid = {case.case_id: case for case in self.batch_cases}
         for index, item in enumerate(getattr(self, "_case_rows", [])):
             case = valid.get(item.case_id)
@@ -2325,22 +2416,47 @@ class MainWindow(QMainWindow):
             self.batch_table.setCellWidget(row, 7, None)
         button = QPushButton(self.i18n.tr("viewer.open"))
         button.setProperty("role", "small")
-        button.setFixedWidth(106)
-        button.setFixedHeight(28)
         button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        button.setFixedWidth(max(72, self.batch_table.columnWidth(7) - 16))
         button.setToolTip(self.i18n.tr("viewer.open_hint"))
+        button.setAccessibleName(self.i18n.tr("viewer.open"))
         button.clicked.connect(
             lambda _, root=Path(case_root): self._open_case_viewer(root))
         holder = QWidget()
-        holder.setFixedWidth(self.batch_table.columnWidth(7))
-        holder.setFixedHeight(
-            self.batch_table.verticalHeader().defaultSectionSize())
+        holder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         holder_layout = QHBoxLayout(holder)
-        holder_layout.setContentsMargins(4, 2, 4, 2)
+        holder_layout.setContentsMargins(0, 9, 0, 9)
         holder_layout.setSpacing(0)
-        holder_layout.addWidget(button, 0, Qt.AlignCenter)
+        holder_layout.addWidget(button, 1, Qt.AlignVCenter)
         holder.show()
         self.batch_table.setCellWidget(row, 7, holder)
+        QTimer.singleShot(
+            0, lambda h=holder, b=button: self._fit_viewer_cell(h, b))
+
+    def _fit_batch_buttons(self):
+        width = max(72, self.batch_table.columnWidth(7) - 16)
+        for row in range(self.batch_table.rowCount()):
+            holder = self.batch_table.cellWidget(row, 7)
+            button = holder.findChild(QPushButton) if holder else None
+            if isinstance(button, QPushButton):
+                button.setFixedWidth(width)
+                self._fit_viewer_cell(holder, button)
+
+    @staticmethod
+    def _fit_viewer_cell(holder: QWidget, button: QPushButton):
+        """Keep a row action inside its cell after Qt applies cell geometry."""
+        try:
+            visible = holder.isVisible()
+        except RuntimeError:
+            return
+        if not visible:
+            return
+        button.setFixedWidth(max(72, holder.width() - 10))
+        available = max(24, holder.height() - 18)
+        button.setFixedHeight(min(28, available))
+        holder_layout = holder.layout()
+        if holder_layout is not None:
+            holder_layout.activate()
 
     def _open_case_viewer(self, case_root: Path):
         from core.experiment_contract import REQUIRED_INPUT_GLOBS

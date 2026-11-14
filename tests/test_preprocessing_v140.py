@@ -221,6 +221,35 @@ def test_default_form_is_empty_and_critical_probability_is_explicit(
     window.close()
 
 
+def test_form_controls_fit_and_switch_to_stacked_at_narrow_width(
+        qt_app, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QComboBox
+    from ui.main_window import MainWindow
+    import ui.main_window as main_window
+
+    settings = type("S", (), {
+        "data": {"language": "en-US"},
+        "save": lambda self: None,
+    })()
+    monkeypatch.setattr(main_window, "Settings", lambda: settings)
+    monkeypatch.setattr(MainWindow, "_prepare_engine", lambda self: None)
+    window = MainWindow()
+    window.resize(1200, 800)
+    window.show()
+    QApplication.processEvents()
+    window._sync_single_layout()
+    QApplication.processEvents()
+
+    assert window._single_stacked is True
+    scroll = window.pages.widget(0)
+    assert scroll.widget().width() <= scroll.viewport().width()
+    combo = next(widget for widget in window.form_edits.values()
+                 if isinstance(widget, QComboBox))
+    assert combo.currentText() == "Select…"
+    assert combo.minimumSizeHint().width() < 280
+    window.close()
+
+
 def test_prepare_batch_makes_raw_source_directory_runnable(
         qt_app, monkeypatch, tmp_path):
     from PySide6.QtWidgets import QApplication

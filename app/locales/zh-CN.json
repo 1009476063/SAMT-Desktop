@@ -41,6 +41,7 @@
   "common.reference": "精确复现",
   "common.selected": "已选择",
   "common.missing": "缺失",
+  "common.select_placeholder": "请选择…",
   "common.files": "文件",
   "common.table": "表格",
   "single.title": "单例预测",

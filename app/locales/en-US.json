@@ -41,6 +41,7 @@
   "common.reference": "Exact reference",
   "common.selected": "Selected",
   "common.missing": "Missing",
+  "common.select_placeholder": "Select…",
   "common.files": "Files",
   "common.table": "Table",
   "single.title": "Single case",

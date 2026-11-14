@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen
+from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleOption
 
 
 COLORS = {
@@ -28,6 +30,31 @@ COLORS = {
     "tree": "#112c2d",
     "tree_text": "#dceeea",
 }
+
+
+class SamtStyle(QProxyStyle):
+    """Draw compact vector chevrons for combo boxes on every platform."""
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element == QStyle.PE_IndicatorArrowDown and \
+                isinstance(option, QStyleOption.ComboBoxEdit):
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing)
+            pen = QPen(QColor(COLORS["accent_hover"]))
+            pen.setWidthF(1.8)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            center = QRectF(option.rect).center()
+            path = (
+                QPointF(center.x() - 4.5, center.y() - 1.5),
+                QPointF(center.x(), center.y() + 3.0),
+                QPointF(center.x() + 4.5, center.y() - 1.5),
+            )
+            painter.drawPolyline(path)
+            painter.restore()
+            return
+        super().drawPrimitive(element, option, painter, widget)
 
 
 def application_font() -> QFont:
@@ -232,26 +259,93 @@ def stylesheet() -> str:
         background: {COLORS['accent_soft']};
         border-color: {COLORS['accent']};
     }}
-    QPushButton[role="small"] {{
-        min-height: 28px;
+    QPushButton[role="small"], QPushButton[role="small"]:focus {{
+        min-height: 26px;
+        max-height: 26px;
+        height: 26px;
         padding: 4px 8px 4px 7px;
         font-size: 9pt;
         border-radius: 5px;
     }}
-    QLineEdit, QComboBox, QTextEdit, QSpinBox, QDoubleSpinBox {{
+    QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {{
         background: {COLORS['surface']};
         border: 1px solid {COLORS['border']};
         border-radius: 5px;
-        min-height: 28px;
-        padding: 4px 8px;
+        min-height: 30px;
+        padding: 4px 10px;
         selection-background-color: {COLORS['accent_soft']};
         selection-color: {COLORS['ink']};
     }}
-    QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{
-        border: 2px solid {COLORS['accent']};
-        padding: 3px 7px;
+    QLineEdit:hover, QTextEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
+        border-color: #9dbdb7;
     }}
-    QComboBox::drop-down {{ width: 26px; border: 0px; }}
+    QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+        border: 2px solid {COLORS['accent']};
+        padding: 3px 9px;
+    }}
+    QLineEdit:disabled, QTextEdit:disabled,
+    QSpinBox:disabled, QDoubleSpinBox:disabled {{
+        background: {COLORS['surface_alt']};
+        color: {COLORS['muted']};
+    }}
+    QComboBox {{
+        background: {COLORS['surface']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 5px;
+        min-height: 30px;
+        padding: 4px 34px 4px 10px;
+        color: {COLORS['ink']};
+    }}
+    QComboBox:hover {{
+        background: #fbfdfc;
+        border-color: #9dbdb7;
+    }}
+    QComboBox:focus {{
+        border: 2px solid {COLORS['accent']};
+        padding: 3px 33px 3px 9px;
+    }}
+    QComboBox:disabled {{
+        background: {COLORS['surface_alt']};
+        color: {COLORS['muted']};
+        border-color: {COLORS['border']};
+    }}
+    QComboBox::drop-down {{
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 30px;
+        border: 0px;
+        border-left: 1px solid {COLORS['accent_soft']};
+        border-top-right-radius: 4px;
+        border-bottom-right-radius: 4px;
+        background: {COLORS['accent_wash']};
+    }}
+    QComboBox::down-arrow {{
+        width: 12px;
+        height: 12px;
+        image: none;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {COLORS['surface']};
+        color: {COLORS['ink']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 5px;
+        outline: 0px;
+        padding: 5px;
+        selection-background-color: {COLORS['accent_soft']};
+        selection-color: {COLORS['ink']};
+    }}
+    QComboBox QAbstractItemView::item {{
+        min-height: 30px;
+        padding: 4px 10px;
+        border-radius: 4px;
+    }}
+    QComboBox QAbstractItemView::item:hover {{
+        background: {COLORS['accent_wash']};
+    }}
+    QComboBox QAbstractItemView::item:selected {{
+        background: {COLORS['accent_soft']};
+        color: {COLORS['ink']};
+    }}
     QCheckBox {{ spacing: 8px; }}
     QGroupBox {{
         border: 0px;
@@ -273,7 +367,7 @@ def stylesheet() -> str:
         margin: 1px;
     }}
     QTableWidget::item {{
-        padding: 4px 6px;
+        padding: 7px 9px;
     }}
     QTableWidget {{
         gridline-color: #dae5e2;
@@ -287,6 +381,7 @@ def stylesheet() -> str:
         border: 1px solid {COLORS['border']};
         border-radius: 6px;
         gridline-color: {COLORS['border']};
+        alternate-background-color: #f8fbfa;
         selection-background-color: {COLORS['accent_soft']};
         selection-color: {COLORS['ink']};
     }}
@@ -294,7 +389,7 @@ def stylesheet() -> str:
         background: {COLORS['surface_alt']};
         border: 0px;
         border-bottom: 1px solid {COLORS['border']};
-        padding: 9px 8px;
+        padding: 9px 11px;
         font-weight: 600;
     }}
     QTabWidget::pane {{ border: 0px; }}
@@ -305,10 +400,27 @@ def stylesheet() -> str:
     QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
         background: {COLORS['border']};
         border-radius: 4px;
+        min-height: 34px;
+        min-width: 34px;
+    }}
+    QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
+        background: #9dbdb7;
+    }}
+    QScrollBar::add-line, QScrollBar::sub-line {{
+        width: 0px;
+        height: 0px;
+    }}
+    QScrollBar::add-page, QScrollBar::sub-page {{
+        background: transparent;
     }}
     QStatusBar {{
         background: {COLORS['surface']};
         border-top: 1px solid {COLORS['border']};
         color: {COLORS['muted']};
+        padding: 0px 10px;
+    }}
+    QStatusBar QLabel {{
+        color: {COLORS['muted']};
+        font-size: 9pt;
     }}
     """

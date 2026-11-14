@@ -51,6 +51,7 @@ class QApplication:
             "setApplicationName": lambda *a: None,
             "setApplicationVersion": lambda self, v: calls.append(
                 ("version", v)),
+            "setStyle": lambda *a: None,
             "setFont": lambda *a: None,
             "setPalette": lambda *a: None,
             "setStyleSheet": lambda *a: None,
@@ -74,6 +75,7 @@ settings_mod = type(sys)("settings")
 settings_mod.Settings = lambda: type("S", (), {"data": {
     "language": "en-US", "disclaimer_accepted": False}})()
 theme_mod = type(sys)("ui.theme")
+theme_mod.SamtStyle = lambda: None
 theme_mod.application_font = lambda: None
 theme_mod.palette = lambda: None
 theme_mod.stylesheet = lambda: ""
