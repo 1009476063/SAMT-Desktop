@@ -146,7 +146,7 @@ def test_batch_headers_fit_their_columns_at_minimum_width(
     header = window.batch_table.horizontalHeader()
     for column in range(window.batch_table.columnCount()):
         text = window.batch_table.horizontalHeaderItem(column).text()
-        required = header.fontMetrics().horizontalAdvance(text) + 24
+        required = header.fontMetrics().horizontalAdvance(text) + 28
         assert window.batch_table.columnWidth(column) >= required, \
             "{} needs {} px, got {}".format(
                 text, required, window.batch_table.columnWidth(column))

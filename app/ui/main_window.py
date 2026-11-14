@@ -619,7 +619,10 @@ class MainWindow(QMainWindow):
     def _page_scroll(widget: QWidget) -> QScrollArea:
         class PageScrollArea(QScrollArea):
             def _fit_page(self):
-                page = self.widget()
+                try:
+                    page = self.widget()
+                except RuntimeError:
+                    return
                 if page is None:
                     return
                 width = max(0, self.viewport().width())
@@ -660,7 +663,10 @@ class MainWindow(QMainWindow):
         # Force one bounded resize after construction so the widget cannot
         # retain a width based on its unconstrained size hint.
         def settle_page(s=scroll):
-            page = s.widget()
+            try:
+                page = s.widget()
+            except RuntimeError:
+                return
             if page is None:
                 return
             page.setMaximumWidth(max(0, s.viewport().width()))
@@ -1492,13 +1498,10 @@ class MainWindow(QMainWindow):
         self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         batch_header = self.batch_table.horizontalHeader()
         batch_header.setSectionResizeMode(QHeaderView.Interactive)
-        for column, width in enumerate((96, 96, 124, 142, 120, 120, 84,
-                                        96)):
-            self.batch_table.setColumnWidth(column, width)
         batch_header.setSectionResizeMode(3, QHeaderView.Stretch)
         batch_header.setSectionResizeMode(7, QHeaderView.Fixed)
-        self.batch_table.setColumnWidth(7, 96)
         batch_header.setMinimumSectionSize(64)
+        self._fit_batch_columns()
         self.batch_table.setAlternatingRowColors(True)
         self.batch_table.setMinimumHeight(180)
         self.batch_table.setShowGrid(True)
@@ -2455,6 +2458,7 @@ class MainWindow(QMainWindow):
         self._retranslate_viewers()
         self._refresh_batch_result_translations()
         self._refresh_batch_rows()
+        self._fit_batch_columns()
         self._retranslate_result()
         self._refresh_batch_summary()
         self._refresh_results()
@@ -3217,6 +3221,33 @@ class MainWindow(QMainWindow):
             if isinstance(button, QPushButton):
                 button.setFixedWidth(width)
                 self._fit_viewer_cell(holder, button)
+
+    def _fit_batch_columns(self):
+        """Allocate fixed columns from the active platform's font metrics."""
+        if not hasattr(self, "batch_table"):
+            return
+        header = self.batch_table.horizontalHeader()
+        metrics = header.fontMetrics()
+        padding = 28
+        minimums = []
+        for column in range(self.batch_table.columnCount()):
+            item = self.batch_table.horizontalHeaderItem(column)
+            minimums.append(
+                metrics.horizontalAdvance(item.text()) + padding)
+        widths = [
+            max(96, minimums[0]),
+            max(96, minimums[1]),
+            max(124, minimums[2]),
+            142,
+            max(120, minimums[4]),
+            max(120, minimums[5]),
+            max(84, minimums[6]),
+            max(96, minimums[7]),
+        ]
+        for column in (0, 1, 2, 4, 5, 6):
+            self.batch_table.setColumnWidth(column, widths[column])
+        self.batch_table.setColumnWidth(7, widths[7])
+        self._fit_batch_buttons()
 
     def _fit_viewer_buttons(self):
         """Let the standalone viewer's controls share the available width."""
