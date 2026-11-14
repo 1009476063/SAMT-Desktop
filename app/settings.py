@@ -28,6 +28,7 @@ DEFAULTS = {
     "models_dir": "",  # empty = bundled models dir
     "device": "cpu",  # CPU is the exact-reproduction reference
     "low_memory": False,
+    "auto_open_results": True,
     "last_export_dir": "",
     "accepted_disclaimer_version": "",
 }

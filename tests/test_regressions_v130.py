@@ -121,11 +121,11 @@ def test_runtime_language_switch_changes_visible_navigation():
     window.i18n.set_language("en-US")
     window._apply_language("en-US")
     nav = window.nav_group.button(0)
-    assert nav.text() == "Single case"
+    assert nav.text() == "Preprocessing"
     window.language_toggle.click()
-    assert nav.text() == "单例预测"
+    assert nav.text() == "预处理"
     assert window.batch_scan_btn.text() == "扫描病例"
     window.language_toggle.click()
-    assert nav.text() == "Single case"
+    assert nav.text() == "Preprocessing"
     assert window.batch_scan_btn.text() == "Scan cases"
     window.close()

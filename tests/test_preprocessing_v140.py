@@ -96,9 +96,9 @@ def test_prepare_case_inputs_generates_three_offline_products(tmp_path):
         "DCE_N4", "DCE_decay1", "MLO_decay1")
     assert all(path.is_file() for path in prepared.model_inputs.values())
     assert not (root / "case1_DCE_N4.nii.gz").exists()
-    assert prepared.dce_n4.name == "case1_DCE_N4_generated.nii.gz"
-    assert prepared.dce_decay.name == "case1_DCE_decay1_generated.nii.gz"
-    assert prepared.mlo_decay.name == "case1_MLO_decay1_generated.nii.gz"
+    assert prepared.dce_n4.name == "case1_DCE_N4.nii.gz"
+    assert prepared.dce_decay.name == "case1_DCE_decay1.nii.gz"
+    assert prepared.mlo_decay.name == "case1_MLO_decay1.nii.gz"
 
     from core.preprocessing import find_source_inputs
 
@@ -182,7 +182,7 @@ def test_in_place_derived_inputs_are_not_mistaken_for_supplied_products(
     second = prepare_case_inputs(root, "case3")
 
     assert first.generated == ("DCE_N4", "DCE_decay1", "MLO_decay1")
-    assert second.generated == first.generated
+    assert second.generated == ()
     assert second.dce_n4 == first.dce_n4
     assert second.dce_decay == first.dce_decay
     assert second.mlo_decay == first.mlo_decay
@@ -234,14 +234,14 @@ def test_form_controls_fit_and_switch_to_stacked_at_narrow_width(
     monkeypatch.setattr(main_window, "Settings", lambda: settings)
     monkeypatch.setattr(MainWindow, "_prepare_engine", lambda self: None)
     window = MainWindow()
-    window.resize(1200, 800)
+    window.resize(1180, 760)
     window.show()
     QApplication.processEvents()
     window._sync_single_layout()
     QApplication.processEvents()
 
     assert window._single_stacked is True
-    scroll = window.pages.widget(0)
+    scroll = window.pages.widget(1)
     assert scroll.widget().width() <= scroll.viewport().width()
     combo = next(widget for widget in window.form_edits.values()
                  if isinstance(widget, QComboBox))
@@ -287,6 +287,7 @@ def test_prepare_batch_makes_raw_source_directory_runnable(
     monkeypatch.setattr(MainWindow, "_prepare_engine", lambda self: None)
     window = MainWindow()
     window.batch_dir_edit.setText(str(root))
+    window.preprocess_dir_edit.setText(str(root))
     window.engine = type("Engine", (), {
         "checkpoint_count": 10,
         "cleanup": lambda self: None,

@@ -169,7 +169,7 @@ def test_completed_batch_renders_results_and_enables_csv(
     window.batch_table.setItem(0, 0, QTableWidgetItem("patient_D"))
     window._refresh_batch_rows()
     window.show()
-    window._navigate(1)
+    window._navigate(2)
     window._dispose_active_thread = lambda: None
     window._inference_done([result], single=False)
     QApplication.processEvents()

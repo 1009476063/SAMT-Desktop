@@ -129,6 +129,47 @@ def stylesheet() -> str:
         border: 1px solid {COLORS['border']};
         border-radius: 8px;
     }}
+    QFrame[role="hero_panel"] {{
+        background: {COLORS['accent_wash']};
+        border: 1px solid {COLORS['accent_soft']};
+        border-left: 3px solid {COLORS['accent']};
+        border-radius: 7px;
+    }}
+    QFrame[role="step"] {{
+        background: {COLORS['surface']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 7px;
+    }}
+    QLabel[role="step_number"] {{
+        background: {COLORS['accent_soft']};
+        border: 1px solid {COLORS['accent']};
+        border-radius: 15px;
+        color: {COLORS['accent_hover']};
+        font-size: 8pt;
+        font-weight: 700;
+    }}
+    QFrame[role="metric_tile"] {{
+        background: {COLORS['surface']};
+        border: 1px solid {COLORS['border']};
+        border-top: 2px solid {COLORS['accent']};
+        border-radius: 7px;
+    }}
+    QLabel[role="status_badge"] {{
+        background: {COLORS['accent_soft']};
+        border: 1px solid {COLORS['accent']};
+        border-radius: 12px;
+        color: {COLORS['accent_hover']};
+        padding: 5px 11px;
+        font-size: 9pt;
+        font-weight: 600;
+    }}
+    QLabel[role="viewer_canvas"] {{
+        background: {COLORS['tree']};
+        border: 1px solid #244b4b;
+        border-radius: 7px;
+        color: {COLORS['tree_text']};
+        padding: 12px;
+    }}
     QFrame[role="subpanel"] {{
         background: {COLORS['accent_wash']};
         border: 1px solid {COLORS['border']};
@@ -169,6 +210,21 @@ def stylesheet() -> str:
     QFrame[role="header"] QPushButton:hover {{
         background: rgba(255, 255, 255, 0.12);
         border-color: {COLORS['tree_text']};
+    }}
+    QComboBox[role="header_language"] {{
+        background: #173c3d;
+        border: 1px solid #416763;
+        color: {COLORS['tree_text']};
+        min-height: 30px;
+        padding: 3px 30px 3px 9px;
+    }}
+    QComboBox[role="header_language"]:hover {{
+        border-color: {COLORS['tree_text']};
+        background: #1d4848;
+    }}
+    QComboBox[role="header_language"]::drop-down {{
+        background: #1d4848;
+        border-left-color: #416763;
     }}
     QPushButton[role="header_tool"] {{
         min-height: 34px;
@@ -236,7 +292,7 @@ def stylesheet() -> str:
         text-align: left;
         border: 0px;
         border-radius: 6px;
-        padding: 10px 14px;
+        padding: 10px 14px 10px 42px;
         min-height: 40px;
         font-size: 10pt;
         color: {COLORS['tree_text']};
@@ -247,7 +303,7 @@ def stylesheet() -> str:
         color: #ffffff;
         font-weight: 600;
         border-left: 3px solid {COLORS['gold']};
-        padding-left: 11px;
+        padding-left: 39px;
     }}
     QPushButton[role="subtle"] {{
         background: {COLORS['accent_wash']};

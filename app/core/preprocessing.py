@@ -21,6 +21,7 @@ class PreprocessingError(ValueError):
 Progress = Callable[[str], None]
 
 ALN_DIAMETER_COLUMN = "max diameter with lowest layer of ALN"
+PREPARED_TABLE_NAME = "CP_prepared.xlsx"
 
 
 @dataclass(frozen=True)
@@ -174,12 +175,19 @@ def prepare_clinical_table(root: str | Path,
         if derived is not None:
             frame.at[index, column] = derived
             filled += 1
-    if target is None or not (filled or column_added):
+    if target is None:
         return source, 0
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     frame.to_excel(target, sheet_name=sheet, index=False)
-    return target, filled if filled else 1
+    return target, filled
+
+
+def prepared_clinical_table(root: str | Path) -> Path:
+    """Return the derived workbook when it exists, otherwise CP.xlsx."""
+    root = Path(root)
+    prepared = root / PREPARED_TABLE_NAME
+    return prepared if prepared.is_file() else root / "CP.xlsx"
 
 
 def source_problems(case_root: str | Path, case_id: str) -> tuple[str, ...]:
@@ -351,7 +359,7 @@ def prepare_case_inputs(case_root: str | Path, case_id: str,
         report("preprocess.n4.running", case_id)
         prepared.dce_n4 = n4_bias_correction(
             found.dce_raw,
-            output / "{}_DCE_N4_generated.nii.gz".format(case_id))
+            output / "{}_DCE_N4.nii.gz".format(case_id))
         generated.append("DCE_N4")
         report("preprocess.n4.done", case_id)
 
@@ -360,7 +368,7 @@ def prepare_case_inputs(case_root: str | Path, case_id: str,
         report("preprocess.dce_decay.running", case_id)
         prepared.dce_decay = create_dce_decay(
             found.dce_gtv, found.dce_gtvnd1,
-            output / "{}_DCE_decay1_generated.nii.gz".format(case_id))
+            output / "{}_DCE_decay1.nii.gz".format(case_id))
         generated.append("DCE_decay1")
         report("preprocess.dce_decay.done", case_id)
 
@@ -369,7 +377,7 @@ def prepare_case_inputs(case_root: str | Path, case_id: str,
         report("preprocess.mlo_decay.running", case_id)
         prepared.mlo_decay = create_mlo_decay(
             found.mlo_gtv, found.mlo_gtvnd1,
-            output / "MG" / "{}_MLO_decay1_generated.nii.gz".format(case_id))
+            output / "MG" / "{}_MLO_decay1.nii.gz".format(case_id))
         generated.append("MLO_decay1")
         report("preprocess.mlo_decay.done", case_id)
 

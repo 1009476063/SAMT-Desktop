@@ -4,6 +4,18 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
+## v1.5.0
+
+This release reorganizes the workbench around the experiment's complete workflow without changing preprocessing formulas, network structure, checkpoint arithmetic, or prediction probabilities.
+
+- Preprocessing is now an independent first-class page. It scans the study root, reports source readiness, generates only missing N4 and decay1 products, and writes model-ready files under their canonical names. Inference consumes staged inputs only and no longer performs hidden preprocessing.
+- The desktop workflow now has seven focused pages: Preprocessing, Single case, Batch inference, Image viewer, Prediction results, Runtime settings, and Method and scope. The sidebar, runtime language selector, and result navigation follow that sequence in both languages.
+- Single-case and batch results converge on a unified result page with six-decimal probabilities, checkpoint vote context, source labels, image access, and CSV export based on actual result availability.
+- Batch preprocessing completion refreshes the case catalog on the Qt main thread, avoiding the cross-thread `PatientCase` assignment failure. The batch table reserves enough width for every localized header at the supported minimum window size.
+- The image viewer is standalone and can resolve scanned or predicted cases, browse all slices and planes, and inspect any available model input.
+- Runtime settings now control language, checkpoint location, compute backend, low-memory inference, and post-inference navigation without recreating the window. The default language remains English; Chinese applies immediately at runtime.
+- The method page documents the full six-stage reproduction path from study-tree preparation through the ten-checkpoint ensemble. Numerical baselines remain `case1 P(pos)=0.508991314` and `case2 P(pos)=0.813457018` with the supplied DCE_N4 inputs and CPU reference backend.
+
 ## v1.4.1
 
 This patch polishes the research workbench controls and layout without changing preprocessing, the network, the ten-checkpoint ensemble, or prediction probabilities.

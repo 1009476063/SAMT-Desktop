@@ -31,6 +31,7 @@ from .experiment_contract import (
     CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, REQUIRED_INPUT_GLOBS,
     resolve_experiment_root,
 )
+from .preprocessing import prepared_clinical_table
 
 _ensure_importable()
 
@@ -220,10 +221,10 @@ def discover_cases(data_root: Path,
     root, selected_case = resolve_experiment_root(data_root)
     only_case = only_case or selected_case
     mrmg = root / "MRMG"
-    cp = root / "CP.xlsx"
+    cp = prepared_clinical_table(root)
     if not mrmg.is_dir():
         problems.append("missing:MRMG")
-    if not cp.is_file():
+    if not (root / "CP.xlsx").is_file():
         problems.append("missing:CP.xlsx")
     if problems:
         return cases, problems

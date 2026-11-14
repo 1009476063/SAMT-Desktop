@@ -1,8 +1,8 @@
 """SAMT Desktop main window: a focused, bilingual research workbench."""
 from __future__ import annotations
 
+import glob
 import sys
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,8 +16,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
     QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget,
+    QHeaderView, QLabel, QLayout, QLineEdit, QMainWindow, QMessageBox,
+    QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget,
     QStyle, QTableWidget, QTableWidgetItem, QTextBrowser, QToolButton,
     QVBoxLayout, QWidget,
 )
@@ -29,8 +29,8 @@ if str(APP_DIR) not in sys.path:
 from i18n import I18n  # noqa: E402
 from settings import Settings  # noqa: E402
 from core.experiment_contract import (  # noqa: E402
-    CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, experiment_tree_description,
-    localized_problem,
+    CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, REQUIRED_INPUT_GLOBS,
+    experiment_tree_description, localized_problem,
 )
 from core.contract_catalog import (  # noqa: E402
     catalog_cases, resolve_experiment_root,
@@ -39,8 +39,9 @@ from core.clinical_table import (  # noqa: E402
     clinical_coverage, localized_error,
 )
 from core.preprocessing import (  # noqa: E402
-    PreprocessingError, find_mlo_image, find_source_inputs,
-    prepare_case_inputs, prepare_clinical_table,
+    PREPARED_TABLE_NAME, PreprocessingError, find_mlo_image,
+    find_source_inputs, prepare_case_inputs, prepare_clinical_table,
+    prepared_clinical_table,
 )
 from ui.clinical_import_dialog import ClinicalImportDialog  # noqa: E402
 from ui.image_preview import ImagePreviewError, preview_pixmap  # noqa: E402
@@ -53,6 +54,37 @@ if TYPE_CHECKING:
 
 # The expanded consent requires one fresh acceptance on upgrade.
 DISCLAIMER_VERSION = "1.3.0"
+
+
+class LanguageCombo(QComboBox):
+    """Language selector that also keeps the old click-toggle API."""
+
+    def click(self):
+        if self.count() > 1:
+            self.setCurrentIndex((self.currentIndex() + 1) % self.count())
+
+
+class NavigationButton(QPushButton):
+    """Nav button with a compact leading index and stronger hierarchy."""
+
+    def __init__(self, index: int, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.index = index
+
+    def paintEvent(self, event):  # noqa: D102, N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        checked = self.isChecked()
+        painter.setPen(QColor("#ffffff" if checked else COLORS["tree_text"]))
+        font = painter.font()
+        font.setPointSize(8)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(
+            12, 0, 22, self.height(), Qt.AlignVCenter | Qt.AlignLeft,
+            "{:02d}".format(self.index + 1))
+        painter.end()
 
 
 def _language_icon() -> QIcon:
@@ -344,55 +376,9 @@ class InferThread(QThread):
         self.engine = engine
         self.cases = cases
 
-    def _study_root(self):
-        for case in self.cases:
-            root = Path(case.case_root)
-            for parent in (root, *root.parents):
-                if (parent / "CP.xlsx").is_file() and \
-                        (parent / "MRMG").is_dir():
-                    return parent
-        return None
-
     def run(self):
         try:
             self.progress_text.emit("stage")
-            self.progress_text.emit("preprocess")
-            from core.preprocessing import (
-                PreprocessingError, prepare_case_inputs,
-                prepare_clinical_table, preparing_status,
-            )
-
-            prepared = []
-            scratch = Path(getattr(self.engine, "_scratch", "") or
-                           tempfile.gettempdir())
-            root = self._study_root()
-            if root is not None:
-                table, derived = prepare_clinical_table(
-                    root, scratch / "prepared" / "CP.xlsx")
-                if derived:
-                    self.progress_text.emit(
-                        "prepare:preprocess.clinical.running:{}".format(
-                            derived))
-                    for case in self.cases:
-                        case.clinical_table = table
-            for case in self.cases:
-                self.progress_text.emit(
-                    "prepare:preprocess.prepare:{}".format(case.case_id))
-                result = prepare_case_inputs(
-                    case.case_root, case.case_id,
-                    progress=self.progress_text.emit,
-                    output_root=scratch / "prepared" / case.case_id)
-                if not result.complete:
-                    raise PreprocessingError(
-                        "prepare.incomplete:{}:{}".format(
-                            case.case_id, preparing_status(result)))
-                case.dce_n4 = result.dce_n4
-                case.dce_decay = result.dce_decay
-                case.mlo = result.mlo
-                case.mlo_decay = result.mlo_decay
-                prepared.append(result)
-            self.progress_text.emit("prepare:complete:{}".format(
-                sum(len(item.generated) for item in prepared)))
             results = self.engine.infer_staged_batch(
                 self.cases, progress=self.progress_text.emit)
             self.finished_ok.emit(results)
@@ -434,6 +420,11 @@ class PrepareThread(QThread):
 
 
 class MainWindow(QMainWindow):
+    NAV_KEYS = (
+        "nav.preprocess", "nav.single", "nav.batch", "nav.viewer",
+        "nav.results", "nav.settings", "nav.about",
+    )
+
     def __init__(self):
         super().__init__()
         self.settings = Settings()
@@ -448,9 +439,13 @@ class MainWindow(QMainWindow):
         self._dynamic_text: dict[QWidget, tuple[str, dict]] = {}
         self._field_labels: dict[str, str] = {}
         self._case_rows: list = []
+        self.preprocess_cases: list = []
+        self._preprocessed_roots: set[str] = set()
         self._batch_result_rows: dict[str, dict[int, str]] = {}
         self._last_df = None
         self._last_single_result = None
+        self._last_single_case = None
+        self._viewer_choice: Path | None = None
         self._active_thread = None
         self._init_thread = None
         self._prepare_thread = None
@@ -477,8 +472,11 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
         body.addWidget(self._build_rail())
         self.pages = QStackedWidget()
+        self.pages.addWidget(self._build_preprocess_page())
         self.pages.addWidget(self._build_single_page())
         self.pages.addWidget(self._build_batch_page())
+        self.pages.addWidget(self._build_image_page())
+        self.pages.addWidget(self._build_results_page())
         self.pages.addWidget(self._build_settings_page())
         self.pages.addWidget(self._build_about_page())
         body.addWidget(self.pages, 1)
@@ -553,31 +551,39 @@ class MainWindow(QMainWindow):
             "border-radius: 5px; padding: 5px 10px;".format(
                 COLORS["accent_hover"], COLORS["accent_soft"], COLORS["accent"]))
         row.addWidget(scope)
-        self.language_toggle = QPushButton(
-            _language_icon(), "")
-        self.language_toggle.setIconSize(QSize(20, 20))
-        self.language_toggle.setFixedSize(38, 34)
-        self.language_toggle.setProperty("role", "header_tool")
+        self.language_toggle = LanguageCombo()
+        self.language_toggle.setProperty("role", "header_language")
+        self.language_toggle.setAccessibleName(
+            self.i18n.tr("common.switch_language"))
+        self.language_toggle.addItem(self.i18n.tr("common.language_zh"),
+                                     "zh-CN")
+        self.language_toggle.addItem(self.i18n.tr("common.language_en"),
+                                     "en-US")
+        current = self.language_toggle.findData(self.i18n.lang)
+        self.language_toggle.setCurrentIndex(max(0, current))
+        self.language_toggle.setFixedWidth(126)
         self.language_toggle.setToolTip(
             self.i18n.tr("common.switch_language"))
-        self.language_toggle.clicked.connect(self._quick_toggle_language)
+        self.language_toggle.currentIndexChanged.connect(
+            self._language_combo_changed)
         row.addWidget(self.language_toggle)
         return header
 
     def _build_rail(self) -> QFrame:
         rail = QFrame()
         rail.setProperty("role", "rail")
-        rail.setFixedWidth(200)
+        rail.setFixedWidth(226)
         layout = QVBoxLayout(rail)
-        layout.setContentsMargins(14, 20, 14, 18)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 22, 14, 18)
+        layout.setSpacing(5)
         layout.addWidget(self._tracked(_caption(""), "nav.section"))
-        layout.addSpacing(8)
+        layout.addSpacing(10)
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        for index, key in enumerate(
-                ("nav.single", "nav.batch", "nav.settings", "nav.about")):
-            button = self._tracked(QPushButton(), key)
+        for index, key in enumerate(self.NAV_KEYS):
+            button = NavigationButton(index)
+            self._translations.append((button, key, "setText"))
+            button.setText(self.i18n.tr(key))
             button.setProperty("role", "nav")
             button.setCheckable(True)
             button.clicked.connect(
@@ -602,16 +608,71 @@ class MainWindow(QMainWindow):
     def _navigate(self, index: int):
         self.pages.setCurrentIndex(index)
         self.nav_group.button(index).setChecked(True)
-        if index == 1:
+        if index == 2:
             QTimer.singleShot(0, self._fit_batch_buttons)
+        elif index == 3:
+            QTimer.singleShot(0, self._fit_viewer_buttons)
+        elif index == 4:
+            QTimer.singleShot(0, self._fit_result_buttons)
 
     @staticmethod
     def _page_scroll(widget: QWidget) -> QScrollArea:
-        scroll = QScrollArea()
+        class PageScrollArea(QScrollArea):
+            def _fit_page(self):
+                page = self.widget()
+                if page is None:
+                    return
+                width = max(0, self.viewport().width())
+                page.setMinimumWidth(0)
+                page.setMaximumWidth(width)
+                page.resize(width, max(page.height(), self.viewport().height()))
+                layout = page.layout()
+                if layout is not None:
+                    layout.setSizeConstraint(QLayout.SetNoConstraint)
+                    layout.invalidate()
+                    layout.activate()
+
+            def eventFilter(self, watched, event):  # noqa: D102, N802
+                if event.type() == event.Type.Resize:
+                    self._fit_page()
+                elif event.type() == event.Type.ChildRemoved and \
+                        self.widget() is None:
+                    return False
+                return super().eventFilter(watched, event)
+
+            def resizeEvent(self, event):  # noqa: D102, N802
+                super().resizeEvent(event)
+                self._fit_page()
+                QTimer.singleShot(0, self._fit_page)
+
+        scroll = PageScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setWidget(widget)
+        scroll.viewport().installEventFilter(scroll)
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        widget.setMaximumWidth(scroll.viewport().width())
+        if widget.layout() is not None:
+            widget.layout().setSizeConstraint(QLayout.SetNoConstraint)
+        # QScrollArea's first resize happens before the viewport has settled.
+        # Force one bounded resize after construction so the widget cannot
+        # retain a width based on its unconstrained size hint.
+        def settle_page(s=scroll):
+            page = s.widget()
+            if page is None:
+                return
+            page.setMaximumWidth(max(0, s.viewport().width()))
+            page.resize(
+                max(0, s.viewport().width()),
+                max(page.height(), s.viewport().height()))
+            layout = page.layout()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+
+        QTimer.singleShot(0, settle_page)
         return scroll
 
     def _page_heading(self, title_key: str, subtitle_key: str) -> QVBoxLayout:
@@ -622,6 +683,191 @@ class MainWindow(QMainWindow):
         block.addWidget(title)
         block.addWidget(self._tracked(_caption(""), subtitle_key))
         return block
+
+    def _workflow_step(self, number: int, title_key: str,
+                       detail_key: str) -> QFrame:
+        panel = QFrame()
+        panel.setProperty("role", "step")
+        row = QHBoxLayout(panel)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(12)
+        badge = QLabel("{:02d}".format(number))
+        badge.setProperty("role", "step_number")
+        badge.setFixedSize(30, 30)
+        badge.setAlignment(Qt.AlignCenter)
+        row.addWidget(badge)
+        copy = QVBoxLayout()
+        copy.setSpacing(2)
+        copy.addWidget(self._tracked(_section_label(""), title_key))
+        copy.addWidget(self._tracked(_caption(""), detail_key))
+        row.addLayout(copy, 1)
+        return panel
+
+    def _metric_tile(self, title_key: str) -> tuple[QFrame, QLabel]:
+        panel = QFrame()
+        panel.setProperty("role", "metric_tile")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+        layout.addWidget(self._tracked(_caption(""), title_key))
+        value = QLabel("--")
+        value.setProperty("role", "metric")
+        layout.addWidget(value)
+        return panel, value
+
+    # ----------------------------------------------------- preprocess page
+    def _build_preprocess_page(self) -> QScrollArea:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(28, 24, 28, 28)
+        root.setSpacing(16)
+        root.addLayout(self._page_heading(
+            "preprocess.title", "preprocess.subtitle"))
+
+        intro = QFrame()
+        intro.setProperty("role", "hero_panel")
+        intro_layout = QHBoxLayout(intro)
+        intro_layout.setContentsMargins(20, 16, 20, 16)
+        intro_layout.setSpacing(18)
+        intro_copy = QVBoxLayout()
+        intro_copy.setSpacing(4)
+        intro_copy.addWidget(self._tracked(
+            _section_label(""), "preprocess.hero_title"))
+        intro_copy.addWidget(self._tracked(
+            _caption(""), "preprocess.hero_body"))
+        intro_layout.addLayout(intro_copy, 1)
+        self.preprocess_state_badge = QLabel("")
+        self.preprocess_state_badge.setProperty("role", "status_badge")
+        intro_layout.addWidget(self.preprocess_state_badge)
+        root.addWidget(intro)
+
+        source_panel = _panel()
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(20, 18, 20, 18)
+        source_layout.setSpacing(12)
+        source_layout.addWidget(self._tracked(
+            _section_label(""), "preprocess.source_title"))
+        source_layout.addWidget(self._tracked(
+            _caption(""), "preprocess.source_hint"))
+        source_row = QHBoxLayout()
+        source_row.setSpacing(10)
+        self.preprocess_dir_edit = QLineEdit()
+        self.preprocess_dir_edit.setPlaceholderText(
+            self.i18n.tr("preprocess.dir_hint"))
+        source_row.addWidget(self.preprocess_dir_edit, 1)
+        self.preprocess_browse_btn = self._tracked(
+            QPushButton(), "common.browse")
+        self.preprocess_browse_btn.setIcon(_standard_icon("SP_DirOpenIcon"))
+        self.preprocess_browse_btn.clicked.connect(
+            self._pick_preprocess_dir)
+        self.preprocess_scan_btn = self._tracked(
+            QPushButton(), "preprocess.scan")
+        self.preprocess_scan_btn.setIcon(_standard_icon("SP_BrowserReload"))
+        self.preprocess_scan_btn.clicked.connect(self.scan_preprocess)
+        source_row.addWidget(self.preprocess_browse_btn)
+        source_row.addWidget(self.preprocess_scan_btn)
+        source_layout.addLayout(source_row)
+
+        pipeline = QGridLayout()
+        pipeline.setSpacing(10)
+        for column, (title, detail) in enumerate((
+                ("preprocess.step_source", "preprocess.step_source_body"),
+                ("preprocess.step_n4", "preprocess.step_n4_body"),
+                ("preprocess.step_decay", "preprocess.step_decay_body"),
+                ("preprocess.step_ready", "preprocess.step_ready_body"))):
+            pipeline.addWidget(
+                self._workflow_step(column + 1, title, detail), 0, column)
+        source_layout.addLayout(pipeline)
+        root.addWidget(source_panel)
+
+        table_panel = _panel()
+        table_layout = QVBoxLayout(table_panel)
+        table_layout.setContentsMargins(20, 18, 20, 18)
+        table_layout.setSpacing(12)
+        table_header = QHBoxLayout()
+        table_header.addWidget(self._tracked(
+            _section_label(""), "preprocess.queue_title"), 1)
+        self.preprocess_table = QTableWidget(0, 5)
+        self._set_table_headers(self.preprocess_table, (
+            "batch.column_case", "preprocess.column_label",
+            "preprocess.column_sources", "preprocess.column_products",
+            "preprocess.column_status"))
+        self.preprocess_table.verticalHeader().setVisible(False)
+        self.preprocess_table.verticalHeader().setDefaultSectionSize(46)
+        self.preprocess_table.verticalHeader().setMinimumSectionSize(46)
+        self.preprocess_table.setEditTriggers(
+            QAbstractItemView.NoEditTriggers)
+        pre_header = self.preprocess_table.horizontalHeader()
+        pre_header.setSectionResizeMode(QHeaderView.Interactive)
+        for column, width in enumerate((150, 115, 250, 260, 250)):
+            self.preprocess_table.setColumnWidth(column, width)
+        pre_header.setSectionResizeMode(4, QHeaderView.Stretch)
+        self.preprocess_table.setAlternatingRowColors(True)
+        self.preprocess_table.setMinimumHeight(230)
+        table_layout.addWidget(self.preprocess_table, 1)
+        action_row = QHBoxLayout()
+        self.preprocess_summary = _caption("")
+        self.preprocess_summary.setWordWrap(True)
+        action_row.addWidget(self.preprocess_summary, 1)
+        self.preprocess_run_btn = self._tracked(
+            QPushButton(), "preprocess.run")
+        self.preprocess_run_btn.setProperty("role", "primary")
+        self.preprocess_run_btn.setIcon(
+            _standard_icon("SP_DialogApplyButton"))
+        self.preprocess_run_btn.setEnabled(False)
+        self.preprocess_run_btn.clicked.connect(self.prepare_batch)
+        self.preprocess_continue_btn = self._tracked(
+            QPushButton(), "preprocess.continue")
+        self.preprocess_continue_btn.setIcon(
+            _standard_icon("SP_ArrowForward"))
+        self.preprocess_continue_btn.clicked.connect(
+            lambda: self._navigate(2))
+        action_row.addWidget(self.preprocess_run_btn)
+        action_row.addWidget(self.preprocess_continue_btn)
+        table_layout.addLayout(action_row)
+        progress_row = QHBoxLayout()
+        self.preprocess_progress = QProgressBar()
+        self.preprocess_progress.setRange(0, 100)
+        self.preprocess_progress.setValue(0)
+        self.preprocess_progress.setFormat("%p%")
+        self.batch_status = self._tracked(_caption(""), "batch.empty")
+        progress_row.addWidget(self.preprocess_progress, 2)
+        progress_row.addWidget(self.batch_status, 3)
+        table_layout.addLayout(progress_row)
+        root.addWidget(table_panel, 1)
+
+        self.structure_title = self._tracked(
+            _section_label(""), "common.directory_structure")
+        root.addWidget(self.structure_title)
+        self.structure_hint = self._tracked(
+            _caption(""), "preprocess.tree_hint")
+        root.addWidget(self.structure_hint)
+        self.structure_copy = QToolButton()
+        self.structure_copy.setIcon(_copy_icon())
+        self.structure_copy.setIconSize(QSize(18, 18))
+        self.structure_copy.setToolTip(
+            self.i18n.tr("directory.copy_tree"))
+        self.structure_copy.clicked.connect(self._copy_experiment_tree)
+        self.structure_browser = QTextBrowser()
+        self.structure_browser.setProperty("role", "tree")
+        self.structure_browser.setReadOnly(True)
+        self.structure_browser.setOpenExternalLinks(False)
+        self.structure_browser.setWordWrapMode(QTextOption.NoWrap)
+        self.structure_browser.setFixedHeight(150)
+        tree_panel = QFrame()
+        tree_panel.setProperty("role", "tree_panel")
+        tree_layout = QVBoxLayout(tree_panel)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.setSpacing(0)
+        copy_row = QHBoxLayout()
+        copy_row.addStretch(1)
+        copy_row.addWidget(self.structure_copy)
+        tree_layout.addLayout(copy_row)
+        tree_layout.addWidget(self.structure_browser)
+        root.addWidget(tree_panel)
+        self._refresh_structure_label()
+        self._refresh_preprocess_state()
+        return self._page_scroll(page)
 
     # --------------------------------------------------------- single page
     def _build_single_page(self) -> QScrollArea:
@@ -670,9 +916,12 @@ class MainWindow(QMainWindow):
                 self.single_top.addWidget(self.single_workspace_panel, 1, 0)
                 self.single_top.setColumnStretch(0, 1)
                 self.single_top.setColumnStretch(1, 0)
+                self.single_top.setColumnMinimumWidth(0, 0)
                 self.single_top.setColumnMinimumWidth(1, 0)
+                self.single_input_panel.setMinimumWidth(0)
+                self.single_workspace_panel.setMinimumWidth(0)
                 self.single_input_panel.setSizePolicy(
-                    QSizePolicy.Ignored, QSizePolicy.Preferred)
+                    QSizePolicy.Expanding, QSizePolicy.Preferred)
                 self.single_workspace_panel.setSizePolicy(
                     QSizePolicy.Expanding, QSizePolicy.Preferred)
             else:
@@ -680,7 +929,10 @@ class MainWindow(QMainWindow):
                 self.single_top.addWidget(self.single_workspace_panel, 0, 1)
                 self.single_top.setColumnStretch(0, 7)
                 self.single_top.setColumnStretch(1, 5)
+                self.single_top.setColumnMinimumWidth(0, 360)
                 self.single_top.setColumnMinimumWidth(1, 300)
+                self.single_input_panel.setMinimumWidth(0)
+                self.single_workspace_panel.setMinimumWidth(300)
                 self.single_input_panel.setSizePolicy(
                     QSizePolicy.Preferred, QSizePolicy.Preferred)
                 self.single_workspace_panel.setSizePolicy(
@@ -734,17 +986,17 @@ class MainWindow(QMainWindow):
         case_row.addWidget(self.case_id_edit, 1)
         layout.addLayout(case_row)
         self.single_source_btn = self._tracked(
-            QPushButton(), "single.select_source")
+            QPushButton(), "single.open_preprocessor")
         self.single_source_btn.setProperty("role", "subtle")
-        self.single_source_btn.setIcon(_standard_icon("SP_DirOpenIcon"))
-        self.single_source_btn.clicked.connect(self._select_source_folder)
-        self.single_source_status = _caption("")
+        self.single_source_btn.setIcon(_standard_icon("SP_ArrowBack"))
+        self.single_source_btn.clicked.connect(lambda: self._navigate(0))
+        self.single_source_status = self._tracked(
+            _caption(""), "preprocess.single_hint")
         source_row = QHBoxLayout()
         source_row.addWidget(self.single_source_btn)
         source_row.addWidget(self.single_source_status, 1)
         layout.addLayout(source_row)
-        self.preprocess_note = self._tracked(
-            _caption(""), "preprocess.note")
+        self.preprocess_note = self._tracked(_caption(""), "preprocess.note")
         layout.addWidget(self.preprocess_note)
         layout.addWidget(self._tracked(
             _caption(""), "single.case_id_hint"))
@@ -1173,11 +1425,29 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(28, 24, 28, 28)
         root.setSpacing(16)
         root.addLayout(self._page_heading("batch.title", "batch.subtitle"))
-        controls = QFrame()
-        controls.setProperty("role", "panel")
+
+        readiness = QFrame()
+        readiness.setProperty("role", "hero_panel")
+        ready_layout = QHBoxLayout(readiness)
+        ready_layout.setContentsMargins(20, 14, 20, 14)
+        ready_copy = QVBoxLayout()
+        ready_copy.setSpacing(3)
+        ready_copy.addWidget(self._tracked(
+            _section_label(""), "batch.ready_title"))
+        ready_copy.addWidget(self._tracked(
+            _caption(""), "batch.ready_hint"))
+        ready_layout.addLayout(ready_copy, 1)
+        self.batch_ready_badge = QLabel(
+            self.i18n.tr("batch.ready_none"))
+        self.batch_ready_badge.setMinimumWidth(132)
+        self.batch_ready_badge.setProperty("role", "status_badge")
+        ready_layout.addWidget(self.batch_ready_badge)
+        root.addWidget(readiness)
+
+        controls = _panel()
         outer = QVBoxLayout(controls)
-        outer.setContentsMargins(18, 14, 18, 14)
-        outer.setSpacing(10)
+        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setSpacing(12)
         row = QHBoxLayout()
         row.setSpacing(10)
         self.settings.data.pop("last_data_dir", None)
@@ -1196,10 +1466,6 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         actions.setSpacing(10)
         actions.addStretch(1)
-        self.batch_prepare_btn = self._tracked(
-            QPushButton(), "preprocess.prepare")
-        self.batch_prepare_btn.setProperty("role", "subtle")
-        self.batch_prepare_btn.setIcon(_standard_icon("SP_DialogApplyButton"))
         self.batch_run_btn = self._tracked(QPushButton(), "batch.run")
         self.batch_run_btn.setProperty("role", "primary")
         self.batch_run_btn.setIcon(_standard_icon("SP_MediaPlay"))
@@ -1207,46 +1473,11 @@ class MainWindow(QMainWindow):
         self.batch_export_btn = self._tracked(QPushButton(), "batch.export")
         self.batch_export_btn.setIcon(_standard_icon("SP_DialogSaveButton"))
         self.batch_export_btn.clicked.connect(self.export_batch)
-        self.batch_prepare_btn.clicked.connect(self.prepare_batch)
-        actions.addWidget(self.batch_prepare_btn)
         actions.addWidget(self.batch_run_btn)
         actions.addWidget(self.batch_export_btn)
         outer.addLayout(actions)
         root.addWidget(controls)
-        self.structure_title = self._tracked(
-            _section_label(""), "common.directory_structure")
-        root.addWidget(self.structure_title)
-        self.structure_hint = self._tracked(
-            _caption(""), "preprocess.tree_hint")
-        root.addWidget(self.structure_hint)
-        self.structure_copy = QToolButton()
-        self.structure_copy.setIcon(_copy_icon())
-        self.structure_copy.setIconSize(QSize(18, 18))
-        self.structure_copy.setToolTip(
-            self.i18n.tr("directory.copy_tree"))
-        self.structure_copy.clicked.connect(self._copy_experiment_tree)
-        self.structure_browser = QTextBrowser()
-        self.structure_browser.setProperty("role", "tree")
-        self.structure_browser.setReadOnly(True)
-        self.structure_browser.setOpenExternalLinks(False)
-        self.structure_browser.setWordWrapMode(QTextOption.NoWrap)
-        self.structure_browser.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
-        self.structure_browser.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
-        self.structure_browser.setFixedHeight(142)
-        tree_panel = QFrame()
-        tree_panel.setProperty("role", "tree_panel")
-        tree_layout = QVBoxLayout(tree_panel)
-        tree_layout.setContentsMargins(0, 0, 0, 0)
-        tree_layout.setSpacing(0)
-        copy_row = QHBoxLayout()
-        copy_row.addStretch(1)
-        copy_row.addWidget(self.structure_copy)
-        tree_layout.addLayout(copy_row)
-        tree_layout.addWidget(self.structure_browser)
-        root.addWidget(tree_panel)
-        self._refresh_structure_label()
+
         self.batch_table = QTableWidget(0, 8)
         self._set_table_headers(self.batch_table, (
             "batch.column_case", "batch.column_label",
@@ -1261,12 +1492,13 @@ class MainWindow(QMainWindow):
         self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         batch_header = self.batch_table.horizontalHeader()
         batch_header.setSectionResizeMode(QHeaderView.Interactive)
-        for column, width in enumerate((130, 110, 105, 220, 150, 150, 110,
-                                        136)):
+        for column, width in enumerate((96, 96, 124, 142, 120, 120, 84,
+                                        96)):
             self.batch_table.setColumnWidth(column, width)
         batch_header.setSectionResizeMode(3, QHeaderView.Stretch)
         batch_header.setSectionResizeMode(7, QHeaderView.Fixed)
-        self.batch_table.setColumnWidth(7, 136)
+        self.batch_table.setColumnWidth(7, 96)
+        batch_header.setMinimumSectionSize(64)
         self.batch_table.setAlternatingRowColors(True)
         self.batch_table.setMinimumHeight(180)
         self.batch_table.setShowGrid(True)
@@ -1274,44 +1506,32 @@ class MainWindow(QMainWindow):
         self.batch_table.itemSelectionChanged.connect(
             self._refresh_batch_summary)
         root.addWidget(self.batch_table, 1)
+
         self.batch_result_panel = _panel()
-        result_layout = QGridLayout(self.batch_result_panel)
-        result_layout.setContentsMargins(18, 14, 18, 14)
-        result_layout.setHorizontalSpacing(18)
-        result_layout.setVerticalSpacing(6)
+        result_layout = QVBoxLayout(self.batch_result_panel)
+        result_layout.setContentsMargins(20, 16, 20, 16)
+        result_layout.setSpacing(10)
         self.batch_result_title = self._tracked(
             _section_label(""), "batch.result_title")
-        result_layout.addWidget(self.batch_result_title, 0, 0, 1, 3)
-        result_layout.addWidget(
-            self._tracked(_caption(""), "single.prob_neg"), 1, 0)
-        result_layout.addWidget(
-            self._tracked(_caption(""), "single.prob_pos"), 1, 1)
-        result_layout.addWidget(
-            self._tracked(_caption(""), "single.prediction"), 1, 2)
-        result_layout.addWidget(
-            self._tracked(_caption(""), "batch.result_checkpoints"), 1, 3)
+        result_layout.addWidget(self.batch_result_title)
+        metric_row = QHBoxLayout()
+        metric_row.setSpacing(10)
+        neg_tile, self.batch_summary_negative = self._metric_tile(
+            "single.prob_neg")
+        pos_tile, self.batch_summary_positive = self._metric_tile(
+            "single.prob_pos")
+        pred_tile, self.batch_summary_prediction = self._metric_tile(
+            "single.prediction")
+        folds_tile, self.batch_summary_folds = self._metric_tile(
+            "batch.result_checkpoints")
+        for tile in (neg_tile, pos_tile, pred_tile, folds_tile):
+            metric_row.addWidget(tile, 1)
+        result_layout.addLayout(metric_row)
         self.batch_criticality = _caption("")
         self.batch_criticality.setWordWrap(True)
         self.batch_criticality.setProperty("role", "result_note")
-        result_layout.addWidget(self.batch_criticality, 3, 0, 1, 5)
-        self.batch_summary_negative = QLabel("--")
-        self.batch_summary_positive = QLabel("--")
-        self.batch_summary_prediction = QLabel("--")
-        self.batch_summary_folds = QLabel("--")
-        for label in (self.batch_summary_negative,
-                      self.batch_summary_positive):
-            label.setStyleSheet(
-                "font-size: 15pt; font-weight: 600; color: {};".format(
-                    COLORS["accent"]))
-        self.batch_summary_prediction.setStyleSheet(
-            "font-size: 12pt; font-weight: 600;")
-        result_layout.addWidget(self.batch_summary_negative, 2, 0)
-        result_layout.addWidget(self.batch_summary_positive, 2, 1)
-        result_layout.addWidget(self.batch_summary_prediction, 2, 2)
-        result_layout.addWidget(self.batch_summary_folds, 2, 3)
-        self.batch_result_panel.setVisible(False)
-        root.addWidget(self.batch_result_panel)
-        viewer_actions = QHBoxLayout()
+        result_layout.addWidget(self.batch_criticality)
+        result_actions = QHBoxLayout()
         self.batch_open_files_btn = self._tracked(
             QPushButton(), "viewer.open_files")
         self.batch_open_files_btn.setIcon(_standard_icon("SP_DirOpenIcon"))
@@ -1319,22 +1539,157 @@ class MainWindow(QMainWindow):
             self.i18n.tr("viewer.open_files_hint"))
         self.batch_open_files_btn.clicked.connect(
             self._open_selected_case_files)
+        self.batch_view_images_btn = self._tracked(
+            QPushButton(), "viewer.open")
+        self.batch_view_images_btn.setIcon(
+            _standard_icon("SP_ComputerIcon"))
+        self.batch_view_images_btn.clicked.connect(
+            self._open_selected_case_viewer)
+        self.batch_open_results_btn = self._tracked(
+            QPushButton(), "batch.open_results")
+        self.batch_open_results_btn.setProperty("role", "subtle")
+        self.batch_open_results_btn.setIcon(
+            _standard_icon("SP_FileDialogDetailedView"))
+        self.batch_open_results_btn.clicked.connect(
+            lambda: self._navigate(4))
+        result_actions.addWidget(self.batch_open_files_btn)
+        result_actions.addWidget(self.batch_view_images_btn)
+        result_actions.addStretch(1)
+        result_actions.addWidget(self.batch_open_results_btn)
+        result_layout.addLayout(result_actions)
         self.batch_summary_note = _caption("")
-        viewer_actions.addWidget(self.batch_open_files_btn)
-        viewer_actions.addWidget(self.batch_summary_note, 1)
-        self.batch_open_files_btn.setVisible(False)
         self.batch_summary_note.setVisible(False)
-        root.addLayout(viewer_actions)
-        self.batch_files_row = viewer_actions
+        result_layout.addWidget(self.batch_summary_note)
+        self.batch_result_panel.setVisible(False)
+        root.addWidget(self.batch_result_panel)
+
         progress_row = QHBoxLayout()
         self.batch_progress = QProgressBar()
         self.batch_progress.setRange(0, 100)
         self.batch_progress.setValue(0)
         self.batch_progress.setFormat("%p%")
-        self.batch_status = self._tracked(_caption(""), "batch.empty")
         progress_row.addWidget(self.batch_progress, 1)
         progress_row.addWidget(self.batch_status, 2)
         root.addLayout(progress_row)
+        return self._page_scroll(page)
+
+    # --------------------------------------------------------- viewer page
+    def _build_image_page(self) -> QScrollArea:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(28, 24, 28, 28)
+        root.setSpacing(16)
+        root.addLayout(self._page_heading("viewer.page_title",
+                                          "viewer.page_subtitle"))
+        panel = _panel()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+        layout.addWidget(self._tracked(
+            _section_label(""), "viewer.case_title"))
+        self.viewer_case_combo = QComboBox()
+        self.viewer_case_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.viewer_case_combo.setMinimumContentsLength(28)
+        self.viewer_case_combo.currentIndexChanged.connect(
+            self._refresh_viewer_case)
+        layout.addWidget(self.viewer_case_combo)
+        source_row = QHBoxLayout()
+        source_row.addWidget(self._tracked(
+            _caption(""), "viewer.source_hint"), 1)
+        self.viewer_source_btn = self._tracked(
+            QPushButton(), "viewer.open_files")
+        self.viewer_source_btn.setIcon(_standard_icon("SP_DirOpenIcon"))
+        self.viewer_source_btn.clicked.connect(
+            self._open_selected_case_files)
+        self.viewer_open_btn = self._tracked(
+            QPushButton(), "viewer.open")
+        self.viewer_open_btn.setProperty("role", "primary")
+        self.viewer_open_btn.setIcon(_standard_icon("SP_ComputerIcon"))
+        self.viewer_open_btn.clicked.connect(
+            self._open_selected_case_viewer)
+        source_row.addWidget(self.viewer_source_btn)
+        source_row.addWidget(self.viewer_open_btn)
+        layout.addLayout(source_row)
+        self.viewer_preview = QLabel()
+        self.viewer_preview.setAlignment(Qt.AlignCenter)
+        self.viewer_preview.setMinimumHeight(390)
+        self.viewer_preview.setProperty("role", "viewer_canvas")
+        self.viewer_preview.setWordWrap(True)
+        self.viewer_preview.setText(
+            self.i18n.tr("viewer.standalone_empty"))
+        layout.addWidget(self.viewer_preview, 1)
+        self.viewer_meta = _caption("")
+        layout.addWidget(self.viewer_meta)
+        root.addWidget(panel, 1)
+        return self._page_scroll(page)
+
+    # -------------------------------------------------------- results page
+    def _build_results_page(self) -> QScrollArea:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(28, 24, 28, 28)
+        root.setSpacing(16)
+        root.addLayout(self._page_heading("results.title",
+                                          "results.subtitle"))
+        summary = QGridLayout()
+        summary.setSpacing(10)
+        total_tile, self.results_total = self._metric_tile(
+            "results.total")
+        positive_tile, self.results_positive = self._metric_tile(
+            "results.positive")
+        negative_tile, self.results_negative = self._metric_tile(
+            "results.negative")
+        source_tile, self.results_source = self._metric_tile(
+            "results.source")
+        for column, tile in enumerate(
+                (total_tile, positive_tile, negative_tile, source_tile)):
+            summary.addWidget(tile, 0, column)
+        root.addLayout(summary)
+
+        detail = _panel()
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(20, 18, 20, 18)
+        detail_layout.setSpacing(12)
+        heading = QHBoxLayout()
+        heading.addWidget(self._tracked(
+            _section_label(""), "results.detail_title"), 1)
+        self.results_export_btn = self._tracked(
+            QPushButton(), "common.export_csv")
+        self.results_export_btn.setIcon(
+            _standard_icon("SP_DialogSaveButton"))
+        self.results_export_btn.setEnabled(False)
+        self.results_export_btn.clicked.connect(self._export_current_results)
+        self.results_view_btn = self._tracked(
+            QPushButton(), "viewer.open")
+        self.results_view_btn.setIcon(_standard_icon("SP_ComputerIcon"))
+        self.results_view_btn.clicked.connect(self._view_result_images)
+        heading.addWidget(self.results_view_btn)
+        heading.addWidget(self.results_export_btn)
+        detail_layout.addLayout(heading)
+        self.results_table = QTableWidget(0, 5)
+        self._set_table_headers(self.results_table, (
+            "results.column_case", "results.column_negative",
+            "results.column_positive", "results.column_prediction",
+            "results.column_votes"))
+        self.results_table.verticalHeader().setVisible(False)
+        self.results_table.verticalHeader().setDefaultSectionSize(46)
+        self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.results_table.setSelectionBehavior(
+            QAbstractItemView.SelectRows)
+        res_header = self.results_table.horizontalHeader()
+        res_header.setSectionResizeMode(QHeaderView.Interactive)
+        for column, width in enumerate((120, 150, 150, 110, 245)):
+            self.results_table.setColumnWidth(column, width)
+        res_header.setSectionResizeMode(4, QHeaderView.Stretch)
+        self.results_table.setMinimumHeight(260)
+        self.results_table.itemSelectionChanged.connect(
+            self._refresh_results_selection)
+        detail_layout.addWidget(self.results_table, 1)
+        self.results_note = self._tracked(
+            _caption(""), "results.empty")
+        detail_layout.addWidget(self.results_note)
+        root.addWidget(detail, 1)
         return self._page_scroll(page)
 
     # ------------------------------------------------------- settings page
@@ -1342,14 +1697,49 @@ class MainWindow(QMainWindow):
         page = QWidget()
         root = QVBoxLayout(page)
         root.setContentsMargins(28, 24, 28, 28)
-        root.setSpacing(16)
+        root.setSpacing(14)
         root.addLayout(self._page_heading("settings.title", "settings.subtitle"))
-        panel = _panel()
-        panel.setMaximumWidth(760)
-        form = QFormLayout(panel)
-        form.setContentsMargins(22, 20, 22, 20)
-        form.setSpacing(14)
-        form.setLabelAlignment(Qt.AlignRight)
+
+        quick = QFrame()
+        quick.setProperty("role", "hero_panel")
+        quick_layout = QHBoxLayout(quick)
+        quick_layout.setContentsMargins(20, 15, 20, 15)
+        quick_layout.setSpacing(16)
+        quick_copy = QVBoxLayout()
+        quick_copy.setSpacing(3)
+        quick_copy.addWidget(self._tracked(
+            _section_label(""), "settings.quick_title"))
+        quick_copy.addWidget(self._tracked(
+            _caption(""), "settings.quick_hint"))
+        quick_layout.addLayout(quick_copy, 1)
+        self.settings_language_quick = LanguageCombo()
+        self.settings_language_quick.addItem(
+            self.i18n.tr("common.language_zh"), "zh-CN")
+        self.settings_language_quick.addItem(
+            self.i18n.tr("common.language_en"), "en-US")
+        self.settings_language_quick.setCurrentIndex(
+            0 if self.i18n.lang == "zh-CN" else 1)
+        self.settings_language_quick.setFixedWidth(150)
+        self.settings_language_quick.currentIndexChanged.connect(
+            self._settings_quick_language)
+        quick_layout.addWidget(self.settings_language_quick)
+        root.addWidget(quick)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+
+        interface_panel = _panel()
+        interface_layout = QVBoxLayout(interface_panel)
+        interface_layout.setContentsMargins(20, 18, 20, 18)
+        interface_layout.setSpacing(10)
+        interface_layout.addWidget(self._tracked(
+            _section_label(""), "settings.interface_title"))
+        interface_layout.addWidget(self._tracked(
+            _caption(""), "settings.interface_hint"))
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.language_combo = QComboBox()
         self.language_combo.addItem(self.i18n.tr("common.language_zh"),
                                     "zh-CN")
@@ -1359,8 +1749,23 @@ class MainWindow(QMainWindow):
             0 if self.i18n.lang == "zh-CN" else 1)
         form.addRow(self._tracked(QLabel(), "settings.language"),
                     self.language_combo)
-        form.addRow("", self._tracked(
+        interface_layout.addLayout(form)
+        interface_layout.addWidget(self._tracked(
             _caption(""), "settings.language_hint"))
+        interface_layout.addStretch(1)
+        grid.addWidget(interface_panel, 0, 0)
+
+        model_panel = _panel()
+        model_layout = QVBoxLayout(model_panel)
+        model_layout.setContentsMargins(20, 18, 20, 18)
+        model_layout.setSpacing(10)
+        model_layout.addWidget(self._tracked(
+            _section_label(""), "settings.model_title"))
+        model_layout.addWidget(self._tracked(
+            _caption(""), "settings.model_hint"))
+        model_form = QFormLayout()
+        model_form.setSpacing(10)
+        model_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         models_row = QHBoxLayout()
         self.models_edit = QLineEdit(
             self.settings.data.get("models_dir", "") or str(BUNDLED_MODELS))
@@ -1370,7 +1775,8 @@ class MainWindow(QMainWindow):
         detect_btn.clicked.connect(self._choose_models_dir)
         models_row.addWidget(self.models_edit, 1)
         models_row.addWidget(detect_btn)
-        form.addRow(self._tracked(QLabel(), "settings.models_dir"), models_row)
+        model_form.addRow(
+            self._tracked(QLabel(), "settings.models_dir"), models_row)
         self.device_combo = QComboBox()
         self.device_combo.addItem(
             "CPU · " + self.i18n.tr("common.reference"), "cpu")
@@ -1379,15 +1785,55 @@ class MainWindow(QMainWindow):
         saved_device = self.settings.data.get("device", "cpu")
         index = self.device_combo.findData(saved_device)
         self.device_combo.setCurrentIndex(max(index, 0))
-        form.addRow(self._tracked(QLabel(), "settings.backend"),
-                    self.device_combo)
-        form.addRow("", self._tracked(
+        model_form.addRow(self._tracked(QLabel(), "settings.backend"),
+                          self.device_combo)
+        model_layout.addLayout(model_form)
+        model_layout.addWidget(self._tracked(
             _caption(""), "settings.backend_hint"))
+        model_layout.addStretch(1)
+        grid.addWidget(model_panel, 0, 1)
+
+        workflow_panel = _panel()
+        workflow_layout = QVBoxLayout(workflow_panel)
+        workflow_layout.setContentsMargins(20, 18, 20, 18)
+        workflow_layout.setSpacing(10)
+        workflow_layout.addWidget(self._tracked(
+            _section_label(""), "settings.workflow_title"))
+        workflow_layout.addWidget(self._tracked(
+            _caption(""), "settings.workflow_hint"))
         self.low_memory_check = self._tracked(
             QCheckBox(), "settings.low_memory")
         self.low_memory_check.setChecked(
             bool(self.settings.data.get("low_memory", False)))
-        form.addRow("", self.low_memory_check)
+        self.auto_results_check = self._tracked(
+            QCheckBox(), "settings.auto_results")
+        self.auto_results_check.setChecked(
+            bool(self.settings.data.get("auto_open_results", True)))
+        workflow_layout.addWidget(self.low_memory_check)
+        workflow_layout.addWidget(self._tracked(
+            _caption(""), "settings.low_memory_hint"))
+        workflow_layout.addWidget(self.auto_results_check)
+        workflow_layout.addWidget(self._tracked(
+            _caption(""), "settings.auto_results_hint"))
+        workflow_layout.addStretch(1)
+        grid.addWidget(workflow_panel, 1, 0)
+
+        status_panel = _panel()
+        status_layout = QVBoxLayout(status_panel)
+        status_layout.setContentsMargins(20, 18, 20, 18)
+        status_layout.setSpacing(10)
+        status_layout.addWidget(self._tracked(
+            _section_label(""), "settings.status_title"))
+        self.models_status = _caption("")
+        status_layout.addWidget(self.models_status)
+        self.settings_device_status = _caption("")
+        status_layout.addWidget(self.settings_device_status)
+        status_layout.addStretch(1)
+        grid.addWidget(status_panel, 1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        root.addLayout(grid)
+
         apply_row = QHBoxLayout()
         apply_row.addStretch(1)
         self.apply_settings_btn = self._tracked(
@@ -1396,11 +1842,7 @@ class MainWindow(QMainWindow):
         self.apply_settings_btn.setIcon(_standard_icon("SP_DialogApplyButton"))
         self.apply_settings_btn.clicked.connect(self.apply_settings)
         apply_row.addWidget(self.apply_settings_btn)
-        form.addRow("", apply_row)
-        self.models_status = _caption("")
-        form.addRow("", self.models_status)
-        root.addWidget(panel)
-        root.addStretch(1)
+        root.addLayout(apply_row)
         return self._page_scroll(page)
 
     # ----------------------------------------------------------- about page
@@ -1410,26 +1852,68 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(28, 24, 28, 28)
         root.setSpacing(16)
         root.addLayout(self._page_heading("about.title", "about.subtitle"))
-        grid = QGridLayout()
-        grid.setSpacing(16)
-        sections = [
-            ("about.pipeline_title", "about.pipeline", 0, 0),
-            ("about.ensemble_title", "about.ensemble", 0, 1),
-            ("about.scope_title", "about.research_only", 1, 0),
-            ("about.structure_title", "about.structure", 1, 1),
-        ]
-        for title_key, body_key, row, column in sections:
-            panel = _panel()
-            layout = QVBoxLayout(panel)
-            layout.setContentsMargins(20, 18, 20, 18)
-            layout.setSpacing(8)
-            layout.addWidget(self._tracked(_section_label(""), title_key))
-            body = self._tracked(QLabel(), body_key)
-            body.setWordWrap(True)
-            layout.addWidget(body)
-            layout.addStretch(1)
-            grid.addWidget(panel, row, column)
-        root.addLayout(grid, 1)
+        guide = QFrame()
+        guide.setProperty("role", "hero_panel")
+        guide_layout = QHBoxLayout(guide)
+        guide_layout.setContentsMargins(20, 16, 20, 16)
+        guide_copy = QVBoxLayout()
+        guide_copy.setSpacing(4)
+        guide_copy.addWidget(self._tracked(
+            _section_label(""), "about.guide_title"))
+        guide_copy.addWidget(self._tracked(
+            _caption(""), "about.guide_body"))
+        guide_layout.addLayout(guide_copy, 1)
+        self.about_workflow_badge = self._tracked(
+            QLabel(), "about.workflow_badge")
+        self.about_workflow_badge.setProperty("role", "status_badge")
+        guide_layout.addWidget(self.about_workflow_badge)
+        root.addWidget(guide)
+
+        steps = QGridLayout()
+        steps.setSpacing(10)
+        for index in range(1, 7):
+            steps.addWidget(self._workflow_step(
+                index, "about.step{}_title".format(index),
+                "about.step{}_body".format(index)),
+                0 if index <= 3 else 1, (index - 1) % 3)
+        root.addLayout(steps)
+
+        detail = _panel()
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(20, 18, 20, 18)
+        detail_layout.setSpacing(10)
+        detail_layout.addWidget(self._tracked(
+            _section_label(""), "about.pipeline_title"))
+        detail_layout.addWidget(self._tracked(
+            _caption(""), "about.pipeline"))
+        detail_layout.addWidget(_divider())
+        detail_layout.addWidget(self._tracked(
+            _section_label(""), "about.ensemble_title"))
+        detail_layout.addWidget(self._tracked(
+            _caption(""), "about.ensemble"))
+        root.addWidget(detail)
+
+        scope = QFrame()
+        scope.setProperty("role", "result_note")
+        scope_layout = QVBoxLayout(scope)
+        scope_layout.setContentsMargins(16, 13, 16, 13)
+        scope_layout.setSpacing(4)
+        scope_layout.addWidget(self._tracked(
+            _section_label(""), "about.scope_title"))
+        scope_layout.addWidget(self._tracked(
+            _caption(""), "about.research_only"))
+        root.addWidget(scope)
+
+        fidelity = QFrame()
+        fidelity.setProperty("role", "hero_panel")
+        fidelity_layout = QHBoxLayout(fidelity)
+        fidelity_layout.setContentsMargins(18, 13, 18, 13)
+        fidelity_layout.addWidget(self._tracked(
+            _section_label(""), "about.fidelity"))
+        fidelity_layout.addStretch(1)
+        fidelity_layout.addWidget(self._tracked(
+            _caption(""), "about.fidelity_value"))
+        root.addWidget(fidelity)
         self.version_label = _caption("")
         root.addWidget(self.version_label)
         self._refresh_version_label()
@@ -1444,6 +1928,12 @@ class MainWindow(QMainWindow):
                   activated=lambda: self._navigate(0))
         QShortcut(QKeySequence("Ctrl+2"), self,
                   activated=lambda: self._navigate(1))
+        QShortcut(QKeySequence("Ctrl+3"), self,
+                  activated=lambda: self._navigate(2))
+        QShortcut(QKeySequence("Ctrl+4"), self,
+                  activated=lambda: self._navigate(3))
+        QShortcut(QKeySequence("Ctrl+5"), self,
+                  activated=lambda: self._navigate(4))
 
     # ---------------------------------------------------------- lifecycle
     def start(self):
@@ -1488,6 +1978,7 @@ class MainWindow(QMainWindow):
         self.single_run_btn.setEnabled(False)
         self.batch_run_btn.setEnabled(False)
         self.batch_export_btn.setEnabled(False)
+        self.results_export_btn.setEnabled(False)
         self.apply_settings_btn.setEnabled(False)
 
     @Slot(int, int)
@@ -1531,6 +2022,7 @@ class MainWindow(QMainWindow):
         self.single_run_btn.setEnabled(True)
         self.apply_settings_btn.setEnabled(True)
         self._refresh_batch_actions()
+        self._refresh_preprocess_state()
         self._dispose_init_thread()
 
     @Slot(str)
@@ -1592,6 +2084,23 @@ class MainWindow(QMainWindow):
         if path:
             self.batch_dir_edit.setText(path)
 
+    def _pick_preprocess_dir(self):
+        default = self.preprocess_dir_edit.text() or str(Path.home())
+        path = QFileDialog.getExistingDirectory(
+            self, self.i18n.tr("preprocess.select_dir"), default)
+        if path:
+            self.preprocess_dir_edit.setText(path)
+
+    def _language_combo_changed(self, _index: int):
+        language = self.language_toggle.currentData()
+        if language and language != self.i18n.lang:
+            self._apply_language(language)
+
+    def _settings_quick_language(self, _index: int):
+        language = self.settings_language_quick.currentData()
+        if language and language != self.i18n.lang:
+            self._apply_language(language)
+
     def _select_source_folder(self):
         """Populate all four single-case inputs from one raw study folder."""
         if self._prepare_thread is not None or self._busy:
@@ -1605,24 +2114,32 @@ class MainWindow(QMainWindow):
         case_id = self.case_id_edit.text().strip() or source.name
         output_root = Path(self.engine._scratch) / "single_prepared" / \
             case_id if self.engine is not None else None
-        self._prepare_context = ("single", source, case_id)
+        context = ("single", source, case_id)
+        self._prepare_context = context
         self.single_source_btn.setEnabled(False)
         self._set_status(
             self.single_source_status, "batch.preparing",
             case=case_id, product=self.i18n.tr("prepare.product.prepare"))
-        self._prepare_thread = PrepareThread(
+        thread = PrepareThread(
             source, case_id, output_root=output_root, parent=self)
-        self._prepare_thread.progress_text.connect(
-            self._on_prepare_progress)
-        self._prepare_thread.finished_ok.connect(
-            self._single_preparation_done)
-        self._prepare_thread.failed.connect(self._preparation_failed)
-        self._prepare_thread.start()
+        self._prepare_thread = thread
+        thread.progress_text.connect(
+            lambda text, owner=thread: self._on_prepare_progress(
+                text, owner=owner))
+        thread.finished_ok.connect(
+            lambda result, owner=thread: self._single_preparation_done(
+                result, owner=owner))
+        thread.failed.connect(
+            lambda message, owner=thread: self._preparation_failed(
+                message, owner=owner))
+        thread.start()
 
-    def _single_preparation_done(self, prepared):
+    def _single_preparation_done(self, prepared, owner=None):
+        if owner is not None and owner is not self._prepare_thread:
+            return
         source, case_id = self._prepare_context[1:]
         self._apply_single_prepared(prepared, source, case_id)
-        self._dispose_prepare_thread()
+        self._dispose_prepare_thread(owner)
         self.single_source_btn.setEnabled(True)
 
     def _apply_single_prepared(self, prepared, source: Path, case_id: str):
@@ -1674,11 +2191,17 @@ class MainWindow(QMainWindow):
         if edit is not None and not edit.text().strip():
             edit.setText(str(diameter))
 
-    @Slot(str)
-    def _on_prepare_progress(self, text: str):
+    def _on_prepare_progress(self, text: str, owner=None):
         if self._closing or self._prepare_context is None:
             return
+        if owner is not None and owner is not self._prepare_thread:
+            return
         mode = self._prepare_context[0]
+        if text.startswith("prepare-progress:"):
+            _, done, total = text.split(":", 2)
+            percent = round(int(done) * 100 / max(int(total), 1))
+            self.preprocess_progress.setValue(percent)
+            return
         if not text.startswith("prepare:"):
             return
         _, code, detail = text.split(":", 2)
@@ -1690,18 +2213,23 @@ class MainWindow(QMainWindow):
             target, "batch.preparing", case=detail,
             product=self.i18n.tr("prepare.product." + action,
                                  fallback=action))
+        if mode == "batch":
+            self.preprocess_progress.setValue(max(
+                self.preprocess_progress.value(), 3))
         if mode == "single":
             self._set_status(self.run_log,
                              "preprocess.progress." + action)
 
-    @Slot(str)
-    def _preparation_failed(self, message: str):
+    def _preparation_failed(self, message: str, owner=None):
+        if owner is not None and owner is not self._prepare_thread:
+            return
         mode = self._prepare_context[0] if self._prepare_context else ""
-        self._dispose_prepare_thread()
+        self._dispose_prepare_thread(owner)
         if self._closing:
             return
         self.single_source_btn.setEnabled(True)
-        self.batch_prepare_btn.setEnabled(True)
+        self.preprocess_progress.setValue(0)
+        self._refresh_preprocess_state()
         self._refresh_batch_actions()
         detail = localized_problem(self.i18n, message)
         if mode == "single":
@@ -1725,6 +2253,104 @@ class MainWindow(QMainWindow):
         new_lang = "en-US" if self.i18n.lang == "zh-CN" else "zh-CN"
         self._apply_language(new_lang, reload_engine=False)
 
+    def _refresh_preprocess_state(self):
+        if not hasattr(self, "preprocess_state_badge"):
+            return
+        ready_count = sum(
+            self._case_has_model_inputs(item.case_root, item.case_id)
+            for item in self.preprocess_cases)
+        ready = bool(self.preprocess_cases) and \
+            ready_count == len(self.preprocess_cases)
+        if self._prepare_thread is not None and self._prepare_thread.isRunning():
+            key = "preprocess.state_running"
+        elif ready:
+            key = "preprocess.state_ready"
+        elif self.preprocess_cases:
+            key = "preprocess.state_review"
+        else:
+            key = "preprocess.state_empty"
+        self._set_status(self.preprocess_state_badge, key)
+        self.preprocess_run_btn.setEnabled(
+            bool(self.preprocess_cases) and not self._busy and
+            self._prepare_thread is None)
+        self.preprocess_continue_btn.setEnabled(
+            bool(ready_count) and not self._busy)
+        self._set_status(
+            self.preprocess_summary, "preprocess.summary",
+            total=len(self.preprocess_cases), ready=ready_count)
+        self._refresh_batch_readiness()
+
+    @staticmethod
+    def _case_has_model_inputs(case_root: Path, case_id: str) -> bool:
+        root = Path(case_root)
+        return all(glob.glob(str(root / pattern.format(id=case_id)))
+                   for _, pattern in REQUIRED_INPUT_GLOBS)
+
+    def _refresh_batch_readiness(self):
+        if not hasattr(self, "batch_ready_badge"):
+            return
+        ready_roots = sum(
+            self._case_has_model_inputs(item.case_root, item.case_id)
+            for item in self._case_rows)
+        self._set_status(
+            self.batch_ready_badge,
+            "batch.ready_badge" if ready_roots else "batch.ready_none",
+            n=ready_roots)
+
+    def scan_preprocess(self):
+        from core.contract_catalog import catalog_cases
+
+        directory = (self.preprocess_dir_edit.text().strip() or
+                     self.batch_dir_edit.text().strip())
+        if not directory or not Path(directory).is_dir():
+            QMessageBox.information(
+                self, self.i18n.tr("common.notice"),
+                self.i18n.tr("preprocess.dir_hint"))
+            return
+        if not self.preprocess_dir_edit.text().strip():
+            self.preprocess_dir_edit.setText(directory)
+        root, selected_case = resolve_experiment_root(directory)
+        self.preprocess_cases, problems = catalog_cases(
+            root, only_case=selected_case)
+        self.preprocess_table.setRowCount(len(self.preprocess_cases))
+        for row, item in enumerate(self.preprocess_cases):
+            missing = item.missing or item.source_missing
+            source_count = max(0, 4 - len(missing))
+            products = ", ".join(
+                localized_problem(self.i18n, name)
+                for name in item.derivable)
+            if not missing:
+                status_key = "preprocess.case_ready"
+            elif item.derivable:
+                status_key = "preprocess.case_derivable"
+            else:
+                status_key = "preprocess.case_blocked"
+            values = (
+                item.case_id,
+                self.i18n.tr("values." + item.label_dir,
+                             fallback=item.label_dir),
+                "{}/4".format(source_count),
+                products or self.i18n.tr("common.none"),
+                self.i18n.tr(status_key),
+            )
+            for column, value in enumerate(values):
+                self.preprocess_table.setItem(
+                    row, column, QTableWidgetItem(value))
+        if problems:
+            self._set_status(
+                self.batch_status, "batch.scan_problems",
+                problems="; ".join(
+                    localized_problem(self.i18n, problem)
+                    for problem in problems))
+        elif self.preprocess_cases:
+            self._set_status(
+                self.batch_status, "preprocess.found",
+                n=len(self.preprocess_cases))
+        else:
+            self._set_status(self.batch_status, "batch.no_cases")
+        self.preprocess_progress.setValue(0)
+        self._refresh_preprocess_state()
+
     def _retranslate_viewers(self):
         orientation = self.single_plane_combo.currentData()
         self.single_plane_combo.blockSignals(True)
@@ -1738,12 +2364,18 @@ class MainWindow(QMainWindow):
         self.viewer_btn.setToolTip(self.i18n.tr("viewer.open_hint"))
         self.batch_open_files_btn.setToolTip(
             self.i18n.tr("viewer.open_files_hint"))
+        self.viewer_source_btn.setToolTip(
+            self.i18n.tr("viewer.open_files_hint"))
+        self.viewer_open_btn.setToolTip(self.i18n.tr("viewer.open_hint"))
+        self.batch_view_images_btn.setToolTip(
+            self.i18n.tr("viewer.open_hint"))
         for row in range(self.batch_table.rowCount()):
             holder = self.batch_table.cellWidget(row, 7)
             button = holder.findChild(QPushButton) if holder else None
             if isinstance(button, QPushButton):
                 button.setText(self.i18n.tr("viewer.open"))
                 button.setToolTip(self.i18n.tr("viewer.open_hint"))
+        self._refresh_viewer_cases()
         self._refresh_batch_actions()
 
     def _apply_language(self, language: str, reload_engine: bool = False):
@@ -1756,30 +2388,32 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.i18n.tr("app.short"))
         for widget, key, method in self._translations:
             getattr(widget, method)(self.i18n.tr(key))
-        for table in (self.fold_table, self.batch_table):
+        for table in (self.preprocess_table, self.fold_table,
+                      self.batch_table, self.results_table):
             keys = table.property("header_keys")
             if keys:
                 table.setHorizontalHeaderLabels(
                     [self.i18n.tr(key) for key in keys])
         for index, button in enumerate(self.nav_group.buttons()):
-            button.setText(self.i18n.tr((
-                "nav.single", "nav.batch", "nav.settings", "nav.about"
-            )[index]))
+            button.setText(self.i18n.tr(self.NAV_KEYS[index]))
         for widget in self.form_edits.values():
             if isinstance(widget, QComboBox) and widget.count():
                 widget.setItemText(
                     0, self.i18n.tr("common.select_placeholder"))
         self.language_toggle.setToolTip(
             self.i18n.tr("common.switch_language"))
-        index = self.language_combo.findData(language)
-        if index >= 0:
-            self.language_combo.setCurrentIndex(index)
-        self.language_combo.setItemText(
-            self.language_combo.findData("zh-CN"),
-            self.i18n.tr("common.language_zh"))
-        self.language_combo.setItemText(
-            self.language_combo.findData("en-US"),
-            self.i18n.tr("common.language_en"))
+        for combo in (self.language_toggle, self.language_combo,
+                      self.settings_language_quick):
+            combo.blockSignals(True)
+            for code in ("zh-CN", "en-US"):
+                combo.setItemText(
+                    combo.findData(code),
+                    self.i18n.tr("common.language_" +
+                                 ("zh" if code == "zh-CN" else "en")))
+            index = combo.findData(language)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.blockSignals(False)
         self.device_combo.setItemText(
             self.device_combo.findData("cpu"),
             "CPU · " + self.i18n.tr("common.reference"))
@@ -1797,6 +2431,8 @@ class MainWindow(QMainWindow):
                 widget.setPlaceholderText("")
         for edit in self.file_edits.values():
             edit.setPlaceholderText(self.i18n.tr("common.missing"))
+        self.preprocess_dir_edit.setPlaceholderText(
+            self.i18n.tr("preprocess.dir_hint"))
         self.batch_dir_edit.setPlaceholderText(
             self.i18n.tr("batch.dir_hint"))
         self.structure_copy.setToolTip(
@@ -1821,6 +2457,8 @@ class MainWindow(QMainWindow):
         self._refresh_batch_rows()
         self._retranslate_result()
         self._refresh_batch_summary()
+        self._refresh_results()
+        self._refresh_preprocess_state()
         _ = reload_engine  # Kept for API symmetry; callers reload explicitly.
 
     def _refresh_version_label(self):
@@ -1868,16 +2506,27 @@ class MainWindow(QMainWindow):
     def _refresh_batch_summary(self):
         result = self._selected_batch_result()
         root = self._selected_case_root()
-        self.batch_open_files_btn.setVisible(root is not None)
-        self.batch_summary_note.setVisible(root is not None)
+        self.batch_result_panel.setVisible(True)
         self.batch_open_files_btn.setEnabled(root is not None)
+        self.batch_view_images_btn.setEnabled(root is not None)
+        self.batch_open_results_btn.setEnabled(bool(self._result_rows()))
+        self.batch_summary_note.setVisible(root is not None)
         self.batch_summary_note.setText(self.i18n.tr(
             "batch.files_available",
             name=root.name if root is not None else ""))
         if result is None:
-            self.batch_result_panel.setVisible(False)
+            self.batch_result_title.setText(
+                self.i18n.tr("batch.result_pending"))
+            for label in (self.batch_summary_negative,
+                          self.batch_summary_positive,
+                          self.batch_summary_prediction,
+                          self.batch_summary_folds):
+                label.setText("--")
+            self.batch_criticality.setText(
+                self.i18n.tr("batch.result_pending_hint"))
             return
-        self.batch_result_panel.setVisible(True)
+        self.batch_result_title.setText(
+            self.i18n.tr("batch.result_title"))
         self.batch_summary_negative.setText(
             self._probability_text(result.prob_neg))
         self.batch_summary_positive.setText(
@@ -1925,6 +2574,8 @@ class MainWindow(QMainWindow):
         self.settings.data["models_dir"] = self.models_edit.text().strip()
         self.settings.data["device"] = self.device_combo.currentData()
         self.settings.data["low_memory"] = self.low_memory_check.isChecked()
+        self.settings.data["auto_open_results"] = \
+            self.auto_results_check.isChecked()
         self._apply_language(language, reload_engine=False)
         self._prepare_engine()
 
@@ -2033,7 +2684,7 @@ class MainWindow(QMainWindow):
 
     def _focus_file(self, key: str):
         self.file_edits[key].setFocus()
-        self._navigate(0)
+        self._navigate(1)
 
     def run_single(self):
         from core.engine import validate_case
@@ -2051,6 +2702,7 @@ class MainWindow(QMainWindow):
                           for problem in problems))
             return
         self.batch_cases = []
+        self._single_case_for_run = case
         self._begin_inference([case], single=True)
 
     def _begin_inference(self, cases: list[PatientCase], single: bool):
@@ -2171,9 +2823,17 @@ class MainWindow(QMainWindow):
                 self.batch_status, "batch.complete", n=len(results))
         self._refresh_batch_actions()
         self._dispose_active_thread()
+        self._refresh_viewer_cases()
+        self._refresh_results()
+        if single:
+            if self.settings.data.get("auto_open_results", True):
+                self._navigate(4)
+        elif self.settings.data.get("auto_open_results", True):
+            self._navigate(4)
 
     def _show_single_result(self, result):
         self._last_single_result = result
+        self._last_single_case = getattr(self, "_single_case_for_run", None)
         self.result_empty.setVisible(False)
         self.result_body.setVisible(True)
         self.positive_prob.setText(self._probability_text(result.prob_pos))
@@ -2199,6 +2859,7 @@ class MainWindow(QMainWindow):
                 row, 1, QTableWidgetItem("{:.6f}".format(probs[0])))
             self.fold_table.setItem(
                 row, 2, QTableWidgetItem("{:.6f}".format(probs[1])))
+        self._refresh_results()
 
     def export_single(self):
         if self._last_single_result is None:
@@ -2232,82 +2893,197 @@ class MainWindow(QMainWindow):
         parent = Path(next(iter(roots.values()))).parent
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
 
+    def _result_cases(self):
+        cases = []
+        if self._last_single_case is not None:
+            cases.append(self._last_single_case)
+        cases.extend(self.batch_cases)
+        unique = {}
+        for case in cases:
+            unique[str(case.case_root)] = case
+        return list(unique.values())
+
+    def _result_rows(self):
+        rows = []
+        if self._last_single_result is not None:
+            rows.append(self._last_single_result)
+        rows.extend(self.batch_results)
+        unique = {}
+        for result in rows:
+            unique[result.case_id] = result
+        return list(unique.values())
+
+    def _refresh_results(self):
+        if not hasattr(self, "results_table"):
+            return
+        results = self._result_rows()
+        self.results_table.blockSignals(True)
+        self.results_table.setRowCount(len(results))
+        for row, result in enumerate(results):
+            votes = self._vote_split(result)
+            values = (
+                result.case_id,
+                self._probability_text(result.prob_neg),
+                self._probability_text(result.prob_pos),
+                self.i18n.tr("values." + result.prediction,
+                             fallback=result.prediction),
+                "{} / {}".format(votes[0], votes[1]),
+            )
+            for column, value in enumerate(values):
+                self.results_table.setItem(
+                    row, column, QTableWidgetItem(value))
+            if result.prediction == "Positive":
+                self.results_table.item(row, 3).setForeground(
+                    QColor(COLORS["positive"]))
+            else:
+                self.results_table.item(row, 3).setForeground(
+                    QColor(COLORS["negative"]))
+        self.results_table.blockSignals(False)
+        if results:
+            self.results_table.selectRow(0)
+        positive = sum(r.prediction == "Positive" for r in results)
+        self.results_total.setText(str(len(results)))
+        self.results_positive.setText(str(positive))
+        self.results_negative.setText(str(len(results) - positive))
+        has_single = self._last_single_result is not None
+        has_batch = bool(self.batch_results)
+        if has_single and has_batch:
+            source_key = "results.source_mixed"
+        elif has_single:
+            source_key = "results.source_single"
+        elif has_batch:
+            source_key = "results.source_batch"
+        else:
+            source_key = "results.source_none"
+        self.results_source.setText(self.i18n.tr(source_key))
+        self.results_note.setText(self.i18n.tr(
+            "results.empty" if not results else "results.ready",
+            n=len(results)))
+        self.results_export_btn.setEnabled(bool(results) and not self._busy)
+        self._refresh_results_selection()
+
+    def _refresh_results_selection(self):
+        if not hasattr(self, "results_table"):
+            return
+        row = self.results_table.currentRow()
+        results = self._result_rows()
+        self.results_view_btn.setEnabled(0 <= row < len(results))
+
+    def _selected_result(self):
+        row = self.results_table.currentRow()
+        results = self._result_rows()
+        return results[row] if 0 <= row < len(results) else None
+
+    def _case_for_result(self, result):
+        if result is None:
+            return None
+        return next((case for case in self._result_cases()
+                     if case.case_id == result.case_id), None)
+
+    def _view_result_images(self):
+        case = self._case_for_result(self._selected_result())
+        if case is not None:
+            self._open_case_viewer(case.case_root)
+
+    def _export_current_results(self):
+        if self.batch_results:
+            self.export_batch()
+        else:
+            self.export_single()
+
     # -------------------------------------------------------- batch flow
     def prepare_batch(self):
         """Derive all available N4/decay products before prediction starts."""
-        from core.engine import discover_cases
-
         if self._prepare_thread is not None or self._busy:
             return
-        directory = self.batch_dir_edit.text().strip()
+        directory = (self.preprocess_dir_edit.text().strip() or
+                     self.batch_dir_edit.text().strip())
         if not directory or not Path(directory).is_dir():
             QMessageBox.information(
                 self, self.i18n.tr("common.notice"),
-                self.i18n.tr("batch.dir_hint"))
+                self.i18n.tr("preprocess.dir_hint"))
             return
+        if not self.preprocess_dir_edit.text().strip():
+            self.preprocess_dir_edit.setText(directory)
         root, selected_case = resolve_experiment_root(directory)
-        cases, problems = discover_cases(root, only_case=selected_case)
-        if problems:
+        if not self.preprocess_cases:
+            self.scan_preprocess()
+        if not self.preprocess_cases:
             self._set_status(self.batch_status, "batch.scan_problems",
-                             problems="; ".join(localized_problem(
-                                 self.i18n, problem)
-                                 for problem in problems))
+                             problems=self.i18n.tr("batch.no_cases"))
             return
-        self.batch_cases = cases
-        self._prepare_context = ("batch", Path(directory))
-        self.batch_prepare_btn.setEnabled(False)
+        context = ("batch", root)
+        self._prepare_context = context
+        self.preprocess_run_btn.setEnabled(False)
         self.batch_run_btn.setEnabled(False)
-        self._prepare_thread = PrepareThread(
-            Path(directory), "", parent=self,
-            work=lambda progress: self._prepare_batch_cases(cases, progress))
-        self._prepare_thread.progress_text.connect(
-            self._on_prepare_progress)
-        self._prepare_thread.finished_ok.connect(
-            self._batch_preparation_done)
-        self._prepare_thread.failed.connect(self._preparation_failed)
-        self._prepare_thread.start()
+        self.preprocess_progress.setValue(0)
+        thread = PrepareThread(
+            root, "", parent=self,
+            work=lambda progress: self._prepare_batch_cases(
+                self.preprocess_cases, progress))
+        self._prepare_thread = thread
+        thread.progress_text.connect(
+            lambda text, owner=thread: self._on_prepare_progress(
+                text, owner=owner))
+        thread.finished_ok.connect(
+            lambda result, owner=thread: self._batch_preparation_done(
+                result, owner=owner))
+        thread.failed.connect(
+            lambda message, owner=thread: self._preparation_failed(
+                message, owner=owner))
+        thread.start()
+        self._refresh_preprocess_state()
 
     def _prepare_batch_cases(self, cases, progress):
-        from core.preprocessing import preparing_status
+        from core.preprocessing import (
+            PREPARED_TABLE_NAME, prepare_clinical_table, preparing_status,
+        )
 
         generated = []
-        for case in cases:
+        total = len(cases)
+        for index, case in enumerate(cases, 1):
             progress("prepare:preprocess.prepare.running:{}".format(
                 case.case_id))
             prepared = prepare_case_inputs(
                 case.case_root, case.case_id,
                 progress=progress)
             generated.extend(prepared.generated)
-            case.dce_n4 = prepared.dce_n4
-            case.dce_decay = prepared.dce_decay
-            case.mlo = prepared.mlo
-            case.mlo_decay = prepared.mlo_decay
             if not prepared.complete:
                 raise PreprocessingError(
                     "prepare.incomplete:{}:{}".format(
                         case.case_id, preparing_status(prepared)))
+            self._preprocessed_roots.add(str(case.case_root))
+            progress("prepare-progress:{}:{}".format(index, total))
         self._prepared_product_count = len(generated)
+        root, _ = resolve_experiment_root(cases[0].case_root)
+        table, derived = prepare_clinical_table(
+            root, root / PREPARED_TABLE_NAME)
+        self._prepared_clinical_count = derived
+        self._prepared_table = table
 
-    def _batch_preparation_done(self, _placeholder=None):
-        self._dispose_prepare_thread()
-        cases = self.batch_cases
-        from core.contract_catalog import catalog_cases
-
-        root, selected_case = resolve_experiment_root(
-            self._prepare_context[1])
-        self._case_rows, _ = catalog_cases(root, only_case=selected_case)
-        self.batch_results = []
-        self._last_df = None
-        self._batch_result_rows = {}
-        self.batch_table.setRowCount(len(self._case_rows))
-        self._refresh_batch_rows()
-        self.batch_prepare_btn.setEnabled(True)
-        self.batch_run_btn.setEnabled(True)
+    def _batch_preparation_done(self, _placeholder=None, owner=None):
+        if owner is not None and owner is not self._prepare_thread:
+            return
+        self._dispose_prepare_thread(owner)
+        cases = self.preprocess_cases
+        self.preprocess_progress.setValue(100)
+        self._set_status(
+            self.batch_status, "preprocess.batch_ready",
+            n=getattr(self, "_prepared_product_count", 0))
+        self.preprocess_continue_btn.setEnabled(True)
+        self._refresh_preprocess_state()
+        self.batch_cases = []
         self._refresh_batch_actions()
-        if all(case.dce_n4 and case.dce_decay and case.mlo and
-               case.mlo_decay for case in cases):
-            self._set_status(self.batch_status, "preprocess.batch_ready",
-                             n=getattr(self, "_prepared_product_count", 0))
+        if cases:
+            self.batch_dir_edit.setText(self.preprocess_dir_edit.text())
+            self.scan_batch()
+            self._set_status(
+                self.batch_status, "preprocess.batch_ready",
+                n=getattr(self, "_prepared_product_count", 0))
+        self._refresh_preprocess_state()
+        self._refresh_batch_actions()
+        if self.settings.data.get("auto_open_results", True):
+            self._navigate(2)
 
     def scan_batch(self):
         from core.engine import discover_cases, validate_case
@@ -2442,6 +3218,26 @@ class MainWindow(QMainWindow):
                 button.setFixedWidth(width)
                 self._fit_viewer_cell(holder, button)
 
+    def _fit_viewer_buttons(self):
+        """Let the standalone viewer's controls share the available width."""
+        width = max(260, self.pages.width() - 92)
+        self.viewer_case_combo.setMinimumWidth(0)
+        self.viewer_case_combo.setMaximumWidth(width)
+        for button in (self.viewer_source_btn, self.viewer_open_btn):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    def _fit_result_buttons(self):
+        """Keep result actions inside the detail panel at narrow widths."""
+        for column in range(4):
+            self.results_table.setColumnWidth(
+                column, 112 if column in (0, 3) else 144)
+        self.results_table.setColumnWidth(
+            4, max(180, self.results_table.viewport().width() - 512))
+        for button in (self.results_view_btn, self.results_export_btn):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
     @staticmethod
     def _fit_viewer_cell(holder: QWidget, button: QPushButton):
         """Keep a row action inside its cell after Qt applies cell geometry."""
@@ -2459,9 +3255,6 @@ class MainWindow(QMainWindow):
             holder_layout.activate()
 
     def _open_case_viewer(self, case_root: Path):
-        from core.experiment_contract import REQUIRED_INPUT_GLOBS
-        import glob
-
         sources = {}
         case_id = Path(case_root).name
         for key, pattern in REQUIRED_INPUT_GLOBS:
@@ -2493,6 +3286,95 @@ class MainWindow(QMainWindow):
                 self, self.i18n.tr("common.notice"),
                 self.i18n.tr("common.preview_failed", error=str(exc)))
 
+    def _viewer_cases(self):
+        """Union the loaded cases without exposing any build-machine path."""
+        unique = {}
+        for case in self._result_cases():
+            unique[str(Path(case.case_root))] = case
+        for item in getattr(self, "_case_rows", ()):
+            root = Path(item.case_root)
+            unique.setdefault(str(root), type(
+                "ViewerCase", (), {
+                    "case_id": item.case_id,
+                    "case_root": root,
+                })())
+        for item in getattr(self, "preprocess_cases", ()):
+            root = Path(item.case_root)
+            unique.setdefault(str(root), type(
+                "ViewerCase", (), {
+                    "case_id": item.case_id,
+                    "case_root": root,
+                })())
+        return list(unique.values())
+
+    def _refresh_viewer_cases(self):
+        if not hasattr(self, "viewer_case_combo"):
+            return
+        selected = self.viewer_case_combo.currentData() \
+            if self.viewer_case_combo.count() else None
+        self.viewer_case_combo.blockSignals(True)
+        self.viewer_case_combo.clear()
+        for case in self._viewer_cases():
+            self.viewer_case_combo.addItem(
+                "{} · {}".format(case.case_id, Path(case.case_root).name),
+                str(case.case_root))
+        if self.viewer_case_combo.count():
+            index = self.viewer_case_combo.findData(selected)
+            self.viewer_case_combo.setCurrentIndex(max(0, index))
+        self.viewer_case_combo.blockSignals(False)
+        self.viewer_case_combo.setEnabled(
+            self.viewer_case_combo.count() > 0)
+        self._refresh_viewer_case()
+
+    def _viewer_selected_root(self) -> Path | None:
+        if not hasattr(self, "viewer_case_combo"):
+            return None
+        data = self.viewer_case_combo.currentData()
+        return Path(data) if data else None
+
+    def _refresh_viewer_case(self, *_args):
+        if not hasattr(self, "viewer_preview"):
+            return
+        root = self._viewer_selected_root()
+        self.viewer_source_btn.setEnabled(root is not None)
+        self.viewer_open_btn.setEnabled(root is not None)
+        if root is None:
+            self.viewer_preview.clear()
+            self.viewer_preview.setText(
+                self.i18n.tr("viewer.standalone_empty"))
+            self.viewer_meta.setText("")
+            return
+        case_id = root.name
+        sources = {}
+        for key, pattern in REQUIRED_INPUT_GLOBS:
+            matches = sorted(glob.glob(str(root / pattern.format(id=case_id))))
+            if matches:
+                sources[key] = matches[0]
+        if not sources:
+            self.viewer_preview.clear()
+            self.viewer_preview.setText(self.i18n.tr("viewer.no_images"))
+            self.viewer_meta.setText(case_id)
+            return
+        try:
+            pixmap, shape = preview_pixmap(
+                next(iter(sources.values())),
+                max(320, self.viewer_preview.width() - 32))
+        except (ImagePreviewError, OSError, ValueError) as exc:
+            self.viewer_preview.clear()
+            self.viewer_preview.setText(self.i18n.tr(
+                "common.preview_failed", error=str(exc)))
+            self.viewer_meta.setText(case_id)
+            return
+        self.viewer_preview.setPixmap(pixmap)
+        self.viewer_meta.setText(self.i18n.tr(
+            "viewer.case_meta", case=case_id,
+            inputs=len(sources), shape=shape))
+
+    def _open_selected_case_viewer(self):
+        root = self._viewer_selected_root()
+        if root is not None:
+            self._open_case_viewer(root)
+
     def _selected_case_root(self) -> Path | None:
         row = self.batch_table.currentRow()
         if row < 0:
@@ -2505,7 +3387,7 @@ class MainWindow(QMainWindow):
         return Path(case.case_root) if case is not None else None
 
     def _open_selected_case_files(self):
-        root = self._selected_case_root()
+        root = self._viewer_selected_root() or self._selected_case_root()
         if root is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
@@ -2517,6 +3399,15 @@ class MainWindow(QMainWindow):
             self.engine is not None and not self._busy and bool(runnable))
         self.batch_export_btn.setEnabled(
             self._last_df is not None and not self._busy)
+        self.results_export_btn.setEnabled(
+            bool(self._result_rows()) and not self._busy)
+        if hasattr(self, "batch_open_results_btn"):
+            self.batch_open_results_btn.setEnabled(
+                bool(self._result_rows()) and not self._busy)
+        if hasattr(self, "batch_view_images_btn"):
+            self.batch_view_images_btn.setEnabled(
+                self._selected_case_root() is not None)
+        self._refresh_batch_readiness()
 
     def run_batch(self):
         from core.engine import validate_case
@@ -2552,6 +3443,7 @@ class MainWindow(QMainWindow):
                 self.batch_table.setItem(
                     row, column, QTableWidgetItem(value))
         self._refresh_batch_summary()
+        self._refresh_results()
 
     def export_batch(self):
         if self._last_df is None:
@@ -2604,8 +3496,8 @@ class MainWindow(QMainWindow):
         thread.deleteLater()
         self._active_thread = None
 
-    def _dispose_prepare_thread(self):
-        thread = self._prepare_thread
+    def _dispose_prepare_thread(self, owner=None):
+        thread = owner or self._prepare_thread
         if thread is None:
             return
         try:
@@ -2617,4 +3509,6 @@ class MainWindow(QMainWindow):
         if thread.isRunning():
             thread.wait()
         thread.deleteLater()
-        self._prepare_thread = None
+        if thread is self._prepare_thread:
+            self._prepare_thread = None
+            self._prepare_context = None
