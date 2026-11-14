@@ -24,7 +24,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("SAMT Desktop")
-    app.setApplicationVersion("1.3.2")
+    app.setApplicationVersion("1.4.0")
     app.setFont(application_font())
     app.setPalette(palette())
     app.setStyleSheet(stylesheet())

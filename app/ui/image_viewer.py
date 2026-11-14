@@ -25,6 +25,11 @@ INPUT_LABEL_KEYS = {
     "dce_decay": "inputs.dce_decay1",
     "mlo": "inputs.mlo",
     "mlo_decay": "inputs.mlo_decay1",
+    "dce_raw": "inputs.dce_raw",
+    "dce_gtv": "inputs.dce_gtv",
+    "dce_gtvnd1": "inputs.dce_gtvnd1",
+    "mlo_gtv": "inputs.mlo_gtv",
+    "mlo_gtvnd1": "inputs.mlo_gtvnd1",
 }
 
 

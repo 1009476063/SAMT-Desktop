@@ -177,7 +177,7 @@ def test_completed_batch_renders_results_and_enables_csv(
     assert window.batch_table.item(0, 4).text() == "0.186543"
     assert window.batch_table.item(0, 5).text() == "0.813457"
     assert window.batch_table.item(0, 6).text() == "Positive"
-    assert isinstance(window.batch_table.cellWidget(0, 7), QPushButton)
+    assert window.batch_table.cellWidget(0, 7).findChild(QPushButton)
     assert window.batch_summary_prediction.text() == "Positive"
     assert "0.813457" in window.batch_summary_positive.text()
 

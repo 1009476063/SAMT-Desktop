@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,7 +10,7 @@ from PySide6.QtCore import (
     QSize, Qt, QThread, QThreadPool, QTimer, QUrl, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap,
+    QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap,
     QShortcut, QTextOption,
 )
 from PySide6.QtWidgets import (
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QTableWidget,
-    QTextBrowser, QToolButton,
+    QStyle, QTextBrowser, QToolButton,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -36,6 +37,10 @@ from core.contract_catalog import (  # noqa: E402
 )
 from core.clinical_table import (  # noqa: E402
     clinical_coverage, localized_error,
+)
+from core.preprocessing import (  # noqa: E402
+    PreprocessingError, find_mlo_image, find_source_inputs,
+    prepare_case_inputs, prepare_clinical_table,
 )
 from ui.clinical_import_dialog import ClinicalImportDialog  # noqa: E402
 from ui.image_preview import ImagePreviewError, preview_pixmap  # noqa: E402
@@ -56,7 +61,11 @@ def _language_icon() -> QIcon:
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(COLORS["accent_hover"])
+    from PySide6.QtGui import QPen
+
+    pen = QPen(QColor("#c9e7e2"))
+    pen.setWidthF(1.6)
+    painter.setPen(pen)
     painter.drawEllipse(4, 4, 24, 24)
     painter.drawLine(4, 16, 28, 16)
     painter.drawLine(16, 4, 16, 28)
@@ -76,6 +85,14 @@ def _copy_icon() -> QIcon:
     painter.drawRoundedRect(9, 8, 11, 12, 2, 2)
     painter.end()
     return QIcon(pixmap)
+
+
+def _standard_icon(name: str) -> QIcon:
+    """Use a native platform glyph for a familiar command."""
+    application = QApplication.instance()
+    if application is not None:
+        return application.style().standardIcon(getattr(QStyle, name))
+    return QIcon()
 
 
 def has_current_consent(settings: Settings) -> bool:
@@ -155,7 +172,7 @@ class ResearchUseGate(QDialog):
         mark.setFixedSize(42, 42)
         mark.setAlignment(Qt.AlignCenter)
         mark.setStyleSheet(
-            "background: {}; color: white; border-radius: 6px; "
+            "background: {}; color: white; border-radius: 8px; "
             "font-size: 19pt; font-weight: 600;".format(COLORS["accent"]))
         header_layout.addWidget(mark)
         copy = QVBoxLayout()
@@ -192,9 +209,11 @@ class ResearchUseGate(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.cancel_btn = QPushButton(self.i18n.tr("disclaimer.cancel"))
+        self.cancel_btn.setIcon(_standard_icon("SP_DialogCancelButton"))
         self.cancel_btn.clicked.connect(self.reject)
         self.enter_btn = QPushButton(self.i18n.tr("disclaimer.enter"))
         self.enter_btn.setProperty("role", "primary")
+        self.enter_btn.setIcon(_standard_icon("SP_DialogApplyButton"))
         self.enter_btn.setEnabled(False)
         self.enter_btn.setDefault(True)
         self.enter_btn.clicked.connect(self.accept)
@@ -325,14 +344,92 @@ class InferThread(QThread):
         self.engine = engine
         self.cases = cases
 
+    def _study_root(self):
+        for case in self.cases:
+            root = Path(case.case_root)
+            for parent in (root, *root.parents):
+                if (parent / "CP.xlsx").is_file() and \
+                        (parent / "MRMG").is_dir():
+                    return parent
+        return None
+
     def run(self):
         try:
             self.progress_text.emit("stage")
             self.progress_text.emit("preprocess")
+            from core.preprocessing import (
+                PreprocessingError, prepare_case_inputs,
+                prepare_clinical_table, preparing_status,
+            )
+
+            prepared = []
+            scratch = Path(getattr(self.engine, "_scratch", "") or
+                           tempfile.gettempdir())
+            root = self._study_root()
+            if root is not None:
+                table, derived = prepare_clinical_table(
+                    root, scratch / "prepared" / "CP.xlsx")
+                if derived:
+                    self.progress_text.emit(
+                        "prepare:preprocess.clinical.running:{}".format(
+                            derived))
+                    for case in self.cases:
+                        case.clinical_table = table
+            for case in self.cases:
+                self.progress_text.emit(
+                    "prepare:preprocess.prepare:{}".format(case.case_id))
+                result = prepare_case_inputs(
+                    case.case_root, case.case_id,
+                    progress=self.progress_text.emit,
+                    output_root=scratch / "prepared" / case.case_id)
+                if not result.complete:
+                    raise PreprocessingError(
+                        "prepare.incomplete:{}:{}".format(
+                            case.case_id, preparing_status(result)))
+                case.dce_n4 = result.dce_n4
+                case.dce_decay = result.dce_decay
+                case.mlo = result.mlo
+                case.mlo_decay = result.mlo_decay
+                prepared.append(result)
+            self.progress_text.emit("prepare:complete:{}".format(
+                sum(len(item.generated) for item in prepared)))
             results = self.engine.infer_staged_batch(
                 self.cases, progress=self.progress_text.emit)
             self.finished_ok.emit(results)
         except Exception as exc:  # pragma: no cover
+            self.failed.emit(str(exc))
+
+
+class PrepareThread(QThread):
+    """Run N4 and contour preprocessing away from the UI thread."""
+
+    progress_text = Signal(str)
+    finished_ok = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, source: Path, case_id: str,
+                 output_root: Path | None = None, parent=None,
+                 work=None):
+        super().__init__(parent)
+        self.source = source
+        self.case_id = case_id
+        self.output_root = output_root
+        self.work = work
+
+    def run(self):
+        from core.preprocessing import prepare_case_inputs
+
+        try:
+            if self.work is not None:
+                self.work(self.progress_text.emit)
+                self.finished_ok.emit(None)
+                return
+            prepared = prepare_case_inputs(
+                self.source, self.case_id,
+                progress=self.progress_text.emit,
+                output_root=self.output_root)
+            self.finished_ok.emit(prepared)
+        except Exception as exc:  # pragma: no cover - surfaced by UI
             self.failed.emit(str(exc))
 
 
@@ -345,6 +442,8 @@ class MainWindow(QMainWindow):
         self.batch_cases: list = []
         self.batch_results = []
         self.form_edits: dict[str, QWidget] = {}
+        self._case_source_root = None
+        self._single_prepared = None
         self._translations: list[tuple[QWidget, str, str]] = []
         self._dynamic_text: dict[QWidget, tuple[str, dict]] = {}
         self._field_labels: dict[str, str] = {}
@@ -354,6 +453,8 @@ class MainWindow(QMainWindow):
         self._last_single_result = None
         self._active_thread = None
         self._init_thread = None
+        self._prepare_thread = None
+        self._prepare_context = None
         self._closing = False
         self._busy = False
         self._build_ui()
@@ -363,8 +464,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ UI setup
     def _build_ui(self):
         self.setWindowTitle(self.i18n.tr("app.short"))
-        self.setMinimumSize(1080, 720)
-        self.resize(1360, 860)
+        self.setMinimumSize(1180, 760)
+        self.resize(1460, 900)
         central = QWidget()
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -404,6 +505,27 @@ class MainWindow(QMainWindow):
         self._dynamic_text[widget] = (key, kwargs)
         widget.setText(self.i18n.tr(key, **kwargs))
 
+    def _probability_text(self, probability: float) -> str:
+        """Keep six decimals in both locales; never hide a close margin."""
+        return "{:.6f} · {:.4f}%".format(probability, probability * 100)
+
+    @staticmethod
+    def _vote_split(result) -> tuple[int, int]:
+        votes = [probs for probs in result.fold_probs.values()
+                 if probs is not None]
+        positive = sum(1 for probs in votes if probs[1] > probs[0])
+        return positive, len(votes) - positive
+
+    def _criticality_text(self, result) -> str:
+        positive, negative = self._vote_split(result)
+        margin = abs(result.prob_pos - 0.5)
+        text = self.i18n.tr(
+            "result.criticality", positive=positive, negative=negative,
+            margin="{:.6f}".format(margin))
+        if positive == negative or margin < 0.01:
+            text += "\n" + self.i18n.tr("result.margin_explanation")
+        return text
+
     def _build_header(self) -> QFrame:
         header = QFrame()
         header.setProperty("role", "header")
@@ -434,7 +556,8 @@ class MainWindow(QMainWindow):
         self.language_toggle = QPushButton(
             _language_icon(), "")
         self.language_toggle.setIconSize(QSize(20, 20))
-        self.language_toggle.setFixedWidth(38)
+        self.language_toggle.setFixedSize(38, 34)
+        self.language_toggle.setProperty("role", "header_tool")
         self.language_toggle.setToolTip(
             self.i18n.tr("common.switch_language"))
         self.language_toggle.clicked.connect(self._quick_toggle_language)
@@ -508,8 +631,8 @@ class MainWindow(QMainWindow):
         top.setSpacing(12)
         top.addWidget(self._build_single_input_panel(), 0, 0)
         top.addWidget(self._build_single_workspace_panel(), 0, 1)
-        top.setColumnStretch(0, 2)
-        top.setColumnStretch(1, 3)
+        top.setColumnStretch(0, 5)
+        top.setColumnStretch(1, 4)
         root.addLayout(top, 3)
         root.addWidget(self._build_fold_panel(), 1)
         return self._page_scroll(page)
@@ -537,6 +660,7 @@ class MainWindow(QMainWindow):
             edit.setPlaceholderText(self.i18n.tr("common.missing"))
             browse = self._tracked(QPushButton(), "common.browse")
             browse.setFixedWidth(86)
+            browse.setIcon(_standard_icon("SP_DirOpenIcon"))
             browse.clicked.connect(lambda _, e=edit: self._pick_nifti(e))
             edit.textChanged.connect(self._update_single_viewer)
             row.addWidget(edit, 1)
@@ -548,14 +672,28 @@ class MainWindow(QMainWindow):
         case_row = QHBoxLayout()
         case_row.addWidget(self._tracked(QLabel(), "single.case_id"))
         self.case_id_edit = QLineEdit()
-        self.case_id_edit.setPlaceholderText("case1")
+        self.case_id_edit.setPlaceholderText("")
         case_row.addWidget(self.case_id_edit, 1)
         layout.addLayout(case_row)
+        self.single_source_btn = self._tracked(
+            QPushButton(), "single.select_source")
+        self.single_source_btn.setProperty("role", "subtle")
+        self.single_source_btn.setIcon(_standard_icon("SP_DirOpenIcon"))
+        self.single_source_btn.clicked.connect(self._select_source_folder)
+        self.single_source_status = _caption("")
+        source_row = QHBoxLayout()
+        source_row.addWidget(self.single_source_btn)
+        source_row.addWidget(self.single_source_status, 1)
+        layout.addLayout(source_row)
+        self.preprocess_note = self._tracked(
+            _caption(""), "preprocess.note")
+        layout.addWidget(self.preprocess_note)
         layout.addWidget(self._tracked(
             _caption(""), "single.case_id_hint"))
         table_row = QHBoxLayout()
         self.import_table_btn = self._tracked(
             QPushButton(), "single.import_table")
+        self.import_table_btn.setIcon(_standard_icon("SP_DriveHDIcon"))
         self.import_table_btn.clicked.connect(self.import_clinical_table)
         self.import_table_status = _caption("")
         table_row.addWidget(self.import_table_btn)
@@ -567,7 +705,7 @@ class MainWindow(QMainWindow):
             "single.clinical", CLINICAL_COLUMNS), 1)
         variables.addWidget(self._build_form_group(
             "single.pathology", PATHOLOGY_COLUMNS), 1)
-        layout.addLayout(variables, 1)
+        layout.addLayout(variables)
         self.coverage_label = _caption("")
         layout.addWidget(self.coverage_label)
         self.coverage_bar = QProgressBar()
@@ -583,10 +721,12 @@ class MainWindow(QMainWindow):
                 widget.textChanged.connect(self._refresh_coverage)
         self._refresh_coverage()
         layout.addWidget(self._tracked(_caption(""), "single.form_hint"))
+        layout.addStretch(1)
         action = QHBoxLayout()
         action.addStretch(1)
         self.single_run_btn = self._tracked(QPushButton(), "single.run")
         self.single_run_btn.setProperty("role", "primary")
+        self.single_run_btn.setIcon(_standard_icon("SP_MediaPlay"))
         self.single_run_btn.setMinimumWidth(180)
         self.single_run_btn.clicked.connect(self.run_single)
         action.addWidget(self.single_run_btn)
@@ -608,11 +748,12 @@ class MainWindow(QMainWindow):
             label_key, values = self._field_spec(column)
             if values:
                 widget = QComboBox()
+                widget.addItem("", "")
                 for value in values:
                     widget.addItem(self._value_text(value), value)
             else:
                 widget = QLineEdit()
-                widget.setPlaceholderText("0")
+                widget.setPlaceholderText("")
             widget.setToolTip(column)
             widget.setAccessibleName(self.i18n.tr(label_key))
             label = self._tracked(QLabel(), label_key)
@@ -674,7 +815,7 @@ class MainWindow(QMainWindow):
         self.preview_image = self._tracked(
             QLabel(), "common.preview_empty")
         self.preview_image.setAlignment(Qt.AlignCenter)
-        self.preview_image.setMinimumHeight(260)
+        self.preview_image.setMinimumHeight(220)
         self.preview_image.setWordWrap(True)
         self.preview_image.setStyleSheet(
             "background: {}; border: 1px solid {}; border-radius: 5px;"
@@ -683,9 +824,12 @@ class MainWindow(QMainWindow):
         preview_row = QHBoxLayout()
         self.preview_selector = self._tracked(
             QPushButton(), "common.preview")
+        self.preview_selector.setIcon(
+            _standard_icon("SP_FileDialogContentsView"))
         self.preview_selector.clicked.connect(self._show_image_preview)
         self.viewer_btn = self._tracked(
             QPushButton(), "viewer.open")
+        self.viewer_btn.setIcon(_standard_icon("SP_ComputerIcon"))
         self.viewer_btn.setToolTip(self.i18n.tr("viewer.open_hint"))
         self.viewer_btn.clicked.connect(self._open_single_viewer)
         self.preview_shape = _caption("")
@@ -723,6 +867,10 @@ class MainWindow(QMainWindow):
         self.result_empty.setWordWrap(True)
         self.result_empty.setProperty("role", "caption")
         layout.addWidget(self.result_empty)
+        self.result_empty.setStyleSheet(
+            "background: {}; border: 1px dashed {}; border-radius: 6px; "
+            "padding: 14px;".format(
+                COLORS["accent_wash"], COLORS["border"]))
         self.result_body = QWidget()
         result_layout = QVBoxLayout(self.result_body)
         result_layout.setContentsMargins(0, 0, 0, 0)
@@ -751,8 +899,13 @@ class MainWindow(QMainWindow):
         self.prediction_label.setStyleSheet("font-weight: 600; font-size: 12pt;")
         pred_row.addWidget(self.prediction_label, 1, Qt.AlignRight)
         result_layout.addLayout(pred_row)
+        self.single_criticality = _caption("")
+        self.single_criticality.setWordWrap(True)
+        self.single_criticality.setProperty("role", "result_note")
+        result_layout.addWidget(self.single_criticality)
         self.result_body.setVisible(False)
-        layout.addWidget(self.result_body, 1)
+        layout.addWidget(self.result_body)
+        layout.addStretch(1)
         self.single_progress = QProgressBar()
         self.single_progress.setRange(0, 10)
         self.single_progress.setValue(0)
@@ -766,11 +919,14 @@ class MainWindow(QMainWindow):
         actions.addStretch(1)
         self.single_result_open_files_btn = self._tracked(
             QPushButton(), "viewer.open_files")
+        self.single_result_open_files_btn.setIcon(
+            _standard_icon("SP_DirOpenIcon"))
         self.single_result_open_files_btn.setEnabled(False)
         self.single_result_open_files_btn.clicked.connect(
             self._open_result_case_files)
         actions.addWidget(self.single_result_open_files_btn)
         self.single_export_btn = self._tracked(QPushButton(), "single.export")
+        self.single_export_btn.setIcon(_standard_icon("SP_DialogSaveButton"))
         self.single_export_btn.setEnabled(False)
         self.single_export_btn.clicked.connect(self.export_single)
         actions.addWidget(self.single_export_btn)
@@ -941,30 +1097,50 @@ class MainWindow(QMainWindow):
         root.addLayout(self._page_heading("batch.title", "batch.subtitle"))
         controls = QFrame()
         controls.setProperty("role", "panel")
-        row = QHBoxLayout(controls)
-        row.setContentsMargins(18, 14, 18, 14)
+        outer = QVBoxLayout(controls)
+        outer.setContentsMargins(18, 14, 18, 14)
+        outer.setSpacing(10)
+        row = QHBoxLayout()
         row.setSpacing(10)
         self.settings.data.pop("last_data_dir", None)
         self.batch_dir_edit = QLineEdit()
         self.batch_dir_edit.setPlaceholderText(self.i18n.tr("batch.dir_hint"))
         browse = self._tracked(QPushButton(), "common.browse")
+        browse.setIcon(_standard_icon("SP_DirOpenIcon"))
         browse.clicked.connect(self._pick_data_dir)
         self.batch_scan_btn = self._tracked(QPushButton(), "batch.scan")
+        self.batch_scan_btn.setIcon(_standard_icon("SP_BrowserReload"))
         self.batch_scan_btn.clicked.connect(self.scan_batch)
-        self.batch_run_btn = self._tracked(QPushButton(), "batch.run")
-        self.batch_run_btn.setProperty("role", "primary")
-        self.batch_run_btn.clicked.connect(self.run_batch)
-        self.batch_export_btn = self._tracked(QPushButton(), "batch.export")
-        self.batch_export_btn.clicked.connect(self.export_batch)
         row.addWidget(self.batch_dir_edit, 1)
         row.addWidget(browse)
         row.addWidget(self.batch_scan_btn)
-        row.addWidget(self.batch_run_btn)
-        row.addWidget(self.batch_export_btn)
+        outer.addLayout(row)
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        actions.addStretch(1)
+        self.batch_prepare_btn = self._tracked(
+            QPushButton(), "preprocess.prepare")
+        self.batch_prepare_btn.setProperty("role", "subtle")
+        self.batch_prepare_btn.setIcon(_standard_icon("SP_DialogApplyButton"))
+        self.batch_run_btn = self._tracked(QPushButton(), "batch.run")
+        self.batch_run_btn.setProperty("role", "primary")
+        self.batch_run_btn.setIcon(_standard_icon("SP_MediaPlay"))
+        self.batch_run_btn.clicked.connect(self.run_batch)
+        self.batch_export_btn = self._tracked(QPushButton(), "batch.export")
+        self.batch_export_btn.setIcon(_standard_icon("SP_DialogSaveButton"))
+        self.batch_export_btn.clicked.connect(self.export_batch)
+        self.batch_prepare_btn.clicked.connect(self.prepare_batch)
+        actions.addWidget(self.batch_prepare_btn)
+        actions.addWidget(self.batch_run_btn)
+        actions.addWidget(self.batch_export_btn)
+        outer.addLayout(actions)
         root.addWidget(controls)
         self.structure_title = self._tracked(
             _section_label(""), "common.directory_structure")
         root.addWidget(self.structure_title)
+        self.structure_hint = self._tracked(
+            _caption(""), "preprocess.tree_hint")
+        root.addWidget(self.structure_hint)
         self.structure_copy = QToolButton()
         self.structure_copy.setIcon(_copy_icon())
         self.structure_copy.setIconSize(QSize(18, 18))
@@ -980,7 +1156,7 @@ class MainWindow(QMainWindow):
             Qt.ScrollBarAsNeeded)
         self.structure_browser.setVerticalScrollBarPolicy(
             Qt.ScrollBarAsNeeded)
-        self.structure_browser.setFixedHeight(188)
+        self.structure_browser.setFixedHeight(168)
         tree_panel = QFrame()
         tree_panel.setProperty("role", "tree_panel")
         tree_layout = QVBoxLayout(tree_panel)
@@ -1003,12 +1179,14 @@ class MainWindow(QMainWindow):
         self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         batch_header = self.batch_table.horizontalHeader()
         batch_header.setSectionResizeMode(QHeaderView.Interactive)
-        for column, width in enumerate((120, 110, 105, 220, 120, 120, 100,
-                                        115)):
+        for column, width in enumerate((130, 110, 105, 220, 150, 150, 110,
+                                        136)):
             self.batch_table.setColumnWidth(column, width)
         batch_header.setSectionResizeMode(3, QHeaderView.Stretch)
+        batch_header.setSectionResizeMode(7, QHeaderView.Fixed)
+        self.batch_table.setColumnWidth(7, 136)
         self.batch_table.setAlternatingRowColors(True)
-        self.batch_table.setMinimumHeight(220)
+        self.batch_table.setMinimumHeight(180)
         self.batch_table.itemSelectionChanged.connect(
             self._refresh_batch_summary)
         root.addWidget(self.batch_table, 1)
@@ -1019,7 +1197,7 @@ class MainWindow(QMainWindow):
         result_layout.setVerticalSpacing(6)
         self.batch_result_title = self._tracked(
             _section_label(""), "batch.result_title")
-        result_layout.addWidget(self.batch_result_title, 0, 0, 1, 4)
+        result_layout.addWidget(self.batch_result_title, 0, 0, 1, 3)
         result_layout.addWidget(
             self._tracked(_caption(""), "single.prob_neg"), 1, 0)
         result_layout.addWidget(
@@ -1028,6 +1206,10 @@ class MainWindow(QMainWindow):
             self._tracked(_caption(""), "single.prediction"), 1, 2)
         result_layout.addWidget(
             self._tracked(_caption(""), "batch.result_checkpoints"), 1, 3)
+        self.batch_criticality = _caption("")
+        self.batch_criticality.setWordWrap(True)
+        self.batch_criticality.setProperty("role", "result_note")
+        result_layout.addWidget(self.batch_criticality, 3, 0, 1, 5)
         self.batch_summary_negative = QLabel("--")
         self.batch_summary_positive = QLabel("--")
         self.batch_summary_prediction = QLabel("--")
@@ -1048,6 +1230,7 @@ class MainWindow(QMainWindow):
         viewer_actions = QHBoxLayout()
         self.batch_open_files_btn = self._tracked(
             QPushButton(), "viewer.open_files")
+        self.batch_open_files_btn.setIcon(_standard_icon("SP_DirOpenIcon"))
         self.batch_open_files_btn.setToolTip(
             self.i18n.tr("viewer.open_files_hint"))
         self.batch_open_files_btn.clicked.connect(
@@ -1099,6 +1282,7 @@ class MainWindow(QMainWindow):
             self.settings.data.get("models_dir", "") or str(BUNDLED_MODELS))
         self.models_edit.setReadOnly(True)
         detect_btn = self._tracked(QPushButton(), "settings.detect")
+        detect_btn.setIcon(_standard_icon("SP_BrowserReload"))
         detect_btn.clicked.connect(self._choose_models_dir)
         models_row.addWidget(self.models_edit, 1)
         models_row.addWidget(detect_btn)
@@ -1125,6 +1309,7 @@ class MainWindow(QMainWindow):
         self.apply_settings_btn = self._tracked(
             QPushButton(), "settings.apply")
         self.apply_settings_btn.setProperty("role", "primary")
+        self.apply_settings_btn.setIcon(_standard_icon("SP_DialogApplyButton"))
         self.apply_settings_btn.clicked.connect(self.apply_settings)
         apply_row.addWidget(self.apply_settings_btn)
         form.addRow("", apply_row)
@@ -1297,7 +1482,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: D102, N802
         self._closing = True
-        for thread in (self._active_thread, self._init_thread):
+        for thread in (self._active_thread, self._init_thread,
+                       self._prepare_thread):
             if thread is not None and thread.isRunning():
                 if thread is self._init_thread:
                     thread.wait()
@@ -1321,6 +1507,125 @@ class MainWindow(QMainWindow):
             self, self.i18n.tr("batch.select_dir"), default)
         if path:
             self.batch_dir_edit.setText(path)
+
+    def _select_source_folder(self):
+        """Populate all four single-case inputs from one raw study folder."""
+        if self._prepare_thread is not None or self._busy:
+            return
+        path = QFileDialog.getExistingDirectory(
+            self, self.i18n.tr("single.select_source_title"),
+            str(Path.home()))
+        if not path:
+            return
+        source = Path(path)
+        case_id = self.case_id_edit.text().strip() or source.name
+        output_root = Path(self.engine._scratch) / "single_prepared" / \
+            case_id if self.engine is not None else None
+        self._prepare_context = ("single", source, case_id)
+        self.single_source_btn.setEnabled(False)
+        self._set_status(
+            self.single_source_status, "batch.preparing",
+            case=case_id, product=self.i18n.tr("prepare.product.prepare"))
+        self._prepare_thread = PrepareThread(
+            source, case_id, output_root=output_root, parent=self)
+        self._prepare_thread.progress_text.connect(
+            self._on_prepare_progress)
+        self._prepare_thread.finished_ok.connect(
+            self._single_preparation_done)
+        self._prepare_thread.failed.connect(self._preparation_failed)
+        self._prepare_thread.start()
+
+    def _single_preparation_done(self, prepared):
+        source, case_id = self._prepare_context[1:]
+        self._apply_single_prepared(prepared, source, case_id)
+        self._dispose_prepare_thread()
+        self.single_source_btn.setEnabled(True)
+
+    def _apply_single_prepared(self, prepared, source: Path, case_id: str):
+        if not prepared.complete:
+            from core.preprocessing import preparing_status
+
+            self._set_status(
+                self.single_source_status,
+                "single.source_incomplete",
+                missing=localized_problem(
+                    self.i18n, preparing_status(prepared)))
+        else:
+            generated = ", ".join(
+                self.i18n.tr("inputs." + name, fallback=name)
+                for name in prepared.generated)
+            self._set_status(
+                self.single_source_status, "single.source_ready",
+                generated=generated or self.i18n.tr("common.none"))
+        inputs = prepared.model_inputs
+        mapping = {
+            "dce_n4": inputs.get("DCE_N4"),
+            "dce_decay": inputs.get("DCE_decay1"),
+            "mlo": inputs.get("MLO"),
+            "mlo_decay": inputs.get("MLO_decay1"),
+        }
+        for key, value in mapping.items():
+            self.file_edits[key].setText(str(value) if value else "")
+        self.case_id_edit.setText(case_id)
+        self._case_source_root = source
+        self._single_prepared = prepared
+        self._fill_single_aln_diameter(source, case_id)
+        self._refresh_coverage()
+
+    def _fill_single_aln_diameter(self, source: Path, case_id: str):
+        """Fill only the derived ALN diameter; leave every other field empty."""
+        contour = find_source_inputs(source, case_id).dce_gtvnd1
+        if contour is None:
+            return
+        from core.preprocessing import lowest_layer_aln_diameter
+
+        try:
+            diameter = lowest_layer_aln_diameter(contour)
+        except (OSError, ValueError, PreprocessingError):
+            return
+        if diameter is None:
+            return
+        edit = self.form_edits.get(
+            "max diameter with lowest layer of ALN")
+        if edit is not None and not edit.text().strip():
+            edit.setText(str(diameter))
+
+    @Slot(str)
+    def _on_prepare_progress(self, text: str):
+        if self._closing or self._prepare_context is None:
+            return
+        mode = self._prepare_context[0]
+        if not text.startswith("prepare:"):
+            return
+        _, code, detail = text.split(":", 2)
+        action = code.rsplit(".", 2)[-2] if code.endswith(".running") \
+            else "prepare"
+        target = self.batch_status if mode == "batch" else \
+            self.single_source_status
+        self._set_status(
+            target, "batch.preparing", case=detail,
+            product=self.i18n.tr("prepare.product." + action,
+                                 fallback=action))
+        if mode == "single":
+            self._set_status(self.run_log,
+                             "preprocess.progress." + action)
+
+    @Slot(str)
+    def _preparation_failed(self, message: str):
+        mode = self._prepare_context[0] if self._prepare_context else ""
+        self._dispose_prepare_thread()
+        if self._closing:
+            return
+        self.single_source_btn.setEnabled(True)
+        self.batch_prepare_btn.setEnabled(True)
+        self._refresh_batch_actions()
+        detail = localized_problem(self.i18n, message)
+        if mode == "single":
+            self._set_status(self.single_source_status,
+                             "single.source_error", error=detail)
+        self._set_status(self.run_log, "error.raw_detail", detail=detail)
+        self._set_status(self.batch_status, "error.raw_detail", detail=detail)
+        QMessageBox.critical(self, self.i18n.tr("common.error"), detail)
 
     def _choose_models_dir(self):
         path = QFileDialog.getExistingDirectory(
@@ -1350,7 +1655,8 @@ class MainWindow(QMainWindow):
         self.batch_open_files_btn.setToolTip(
             self.i18n.tr("viewer.open_files_hint"))
         for row in range(self.batch_table.rowCount()):
-            button = self.batch_table.cellWidget(row, 7)
+            holder = self.batch_table.cellWidget(row, 7)
+            button = holder.findChild(QPushButton) if holder else None
             if isinstance(button, QPushButton):
                 button.setText(self.i18n.tr("viewer.open"))
                 button.setToolTip(self.i18n.tr("viewer.open_hint"))
@@ -1394,12 +1700,13 @@ class MainWindow(QMainWindow):
                 current = widget.currentData()
                 for index in range(widget.count()):
                     value = widget.itemData(index)
-                    widget.setItemText(index, self._value_text(value))
+                    widget.setItemText(
+                        index, self._value_text(value) if value else "")
                 found = widget.findData(current)
                 if found >= 0:
                     widget.setCurrentIndex(found)
             else:
-                widget.setPlaceholderText("0")
+                widget.setPlaceholderText("")
         for edit in self.file_edits.values():
             edit.setPlaceholderText(self.i18n.tr("common.missing"))
         self.batch_dir_edit.setPlaceholderText(
@@ -1484,11 +1791,17 @@ class MainWindow(QMainWindow):
             return
         self.batch_result_panel.setVisible(True)
         self.batch_summary_negative.setText(
-            "{:.6f} · {:.2f}%".format(
-                result.prob_neg, result.prob_neg * 100))
+            self._probability_text(result.prob_neg))
         self.batch_summary_positive.setText(
-            "{:.6f} · {:.2f}%".format(
-                result.prob_pos, result.prob_pos * 100))
+            self._probability_text(result.prob_pos))
+        self.batch_criticality.setText(self._criticality_text(result))
+        disk_case = next((case for case in self._case_rows
+                          if case.case_id == result.case_id), None)
+        if disk_case is not None and \
+                result.prediction != disk_case.label_dir:
+            self.batch_criticality.setText(
+                self.batch_criticality.text() + " · " +
+                self.i18n.tr("batch.label_mismatch"))
         self.batch_summary_prediction.setText(self.i18n.tr(
             "values." + result.prediction, fallback=result.prediction))
         self.batch_summary_folds.setText(
@@ -1624,7 +1937,11 @@ class MainWindow(QMainWindow):
             except OSError:
                 shutil.copyfile(source, target)
         return PatientCase(case_id=case_id, label_dir="Positive",
-                           case_root=image_dir, table_row=row)
+                           case_root=image_dir, table_row=row,
+                           dce_n4=paths["dce_n4"],
+                           dce_decay=paths["dce_decay"],
+                           mlo=paths["mlo"],
+                           mlo_decay=paths["mlo_decay"])
 
     def _focus_file(self, key: str):
         self.file_edits[key].setFocus()
@@ -1683,6 +2000,19 @@ class MainWindow(QMainWindow):
             return
         if text == "stage":
             self._set_status(self.run_log, "single.stage_done")
+        elif text.startswith("prepare:"):
+            _, code, detail = text.split(":", 2)
+            if code.endswith(".running"):
+                action = code.rsplit(".", 2)[-2]
+                self._set_status(
+                    self.batch_status, "batch.preparing",
+                    case=detail, product=self.i18n.tr(
+                        "prepare.product." + action, fallback=action))
+                self._set_status(
+                    self.run_log, "preprocess.progress." + action)
+            elif code == "complete":
+                self._set_status(
+                    self.run_log, "preprocess.generated", n=detail)
         elif text.startswith("fold:"):
             self._fold_progress_count += 1
             done = min(self._fold_progress_count, self.single_progress.maximum())
@@ -1758,8 +2088,8 @@ class MainWindow(QMainWindow):
         self._last_single_result = result
         self.result_empty.setVisible(False)
         self.result_body.setVisible(True)
-        self.positive_prob.setText("{:.2f}%".format(result.prob_pos * 100))
-        self.negative_prob.setText("{:.2f}%".format(result.prob_neg * 100))
+        self.positive_prob.setText(self._probability_text(result.prob_pos))
+        self.negative_prob.setText(self._probability_text(result.prob_neg))
         self.positive_bar.setValue(round(result.prob_pos * 1000))
         self.negative_bar.setValue(round(result.prob_neg * 1000))
         prediction_key = "values.Positive" if result.prediction == "Positive" \
@@ -1771,6 +2101,7 @@ class MainWindow(QMainWindow):
             "font-weight: 600; font-size: 12pt; color: {};".format(
                 COLORS["positive"] if result.prediction == "Positive"
                 else COLORS["negative"]))
+        self.single_criticality.setText(self._criticality_text(result))
         self.single_export_btn.setEnabled(True)
         self.single_result_open_files_btn.setEnabled(True)
         self.fold_table.setRowCount(len(result.fold_probs))
@@ -1814,6 +2145,82 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
 
     # -------------------------------------------------------- batch flow
+    def prepare_batch(self):
+        """Derive all available N4/decay products before prediction starts."""
+        from core.engine import discover_cases
+
+        if self._prepare_thread is not None or self._busy:
+            return
+        directory = self.batch_dir_edit.text().strip()
+        if not directory or not Path(directory).is_dir():
+            QMessageBox.information(
+                self, self.i18n.tr("common.notice"),
+                self.i18n.tr("batch.dir_hint"))
+            return
+        root, selected_case = resolve_experiment_root(directory)
+        cases, problems = discover_cases(root, only_case=selected_case)
+        if problems:
+            self._set_status(self.batch_status, "batch.scan_problems",
+                             problems="; ".join(localized_problem(
+                                 self.i18n, problem)
+                                 for problem in problems))
+            return
+        self.batch_cases = cases
+        self._prepare_context = ("batch", Path(directory))
+        self.batch_prepare_btn.setEnabled(False)
+        self.batch_run_btn.setEnabled(False)
+        self._prepare_thread = PrepareThread(
+            Path(directory), "", parent=self,
+            work=lambda progress: self._prepare_batch_cases(cases, progress))
+        self._prepare_thread.progress_text.connect(
+            self._on_prepare_progress)
+        self._prepare_thread.finished_ok.connect(
+            self._batch_preparation_done)
+        self._prepare_thread.failed.connect(self._preparation_failed)
+        self._prepare_thread.start()
+
+    def _prepare_batch_cases(self, cases, progress):
+        from core.preprocessing import preparing_status
+
+        generated = []
+        for case in cases:
+            progress("prepare:preprocess.prepare.running:{}".format(
+                case.case_id))
+            prepared = prepare_case_inputs(
+                case.case_root, case.case_id,
+                progress=progress)
+            generated.extend(prepared.generated)
+            case.dce_n4 = prepared.dce_n4
+            case.dce_decay = prepared.dce_decay
+            case.mlo = prepared.mlo
+            case.mlo_decay = prepared.mlo_decay
+            if not prepared.complete:
+                raise PreprocessingError(
+                    "prepare.incomplete:{}:{}".format(
+                        case.case_id, preparing_status(prepared)))
+        self._prepared_product_count = len(generated)
+
+    def _batch_preparation_done(self, _placeholder=None):
+        self._dispose_prepare_thread()
+        cases = self.batch_cases
+        from core.contract_catalog import catalog_cases
+
+        root, selected_case = resolve_experiment_root(
+            self._prepare_context[1])
+        self._case_rows, _ = catalog_cases(root, only_case=selected_case)
+        self.batch_results = []
+        self._last_df = None
+        self._batch_result_rows = {}
+        self.batch_table.setRowCount(len(self._case_rows))
+        self._refresh_batch_rows()
+        self.batch_prepare_btn.setEnabled(True)
+        self.batch_run_btn.setEnabled(True)
+        self._refresh_batch_actions()
+        if all(case.dce_n4 and case.dce_decay and case.mlo and
+               case.mlo_decay for case in cases):
+            self._set_status(self.batch_status, "preprocess.batch_ready",
+                             n=getattr(self, "_prepared_product_count", 0))
+
     def scan_batch(self):
         from core.engine import discover_cases, validate_case
 
@@ -1851,19 +2258,36 @@ class MainWindow(QMainWindow):
     def _refresh_batch_rows(self):
         if not hasattr(self, "batch_table"):
             return
+        row_count = len(getattr(self, "_case_rows", []))
+        if self.batch_table.rowCount() != row_count:
+            self.batch_table.setRowCount(row_count)
+        for stale_row in range(row_count):
+            stale = self.batch_table.cellWidget(stale_row, 7)
+            if stale is not None:
+                stale.hide()
         valid = {case.case_id: case for case in self.batch_cases}
         for index, item in enumerate(getattr(self, "_case_rows", [])):
             case = valid.get(item.case_id)
             inputs = 4 - len(item.missing)
+            derivable_count = len(getattr(item, "derivable", ()))
             if case is not None and not item.missing:
                 status = self.i18n.tr("batch.status_ok")
+            elif derivable_count:
+                names = ", ".join(
+                    localized_problem(self.i18n, name)
+                    for name in getattr(item, "derivable", ()))
+                status = self.i18n.tr(
+                    "batch.status_derivable", products=names)
+            elif not item.missing and case is None:
+                status = self.i18n.tr("batch.status_unavailable")
             else:
                 fields = ", ".join(localized_problem(self.i18n, problem)
                                    for problem in item.missing)
-                status = self.i18n.tr("batch.status_missing", fields=fields)
-            values = [item.case_id,
-                      self.i18n.tr("values." + item.label_dir,
-                                   fallback=item.label_dir),
+                status = self.i18n.tr(
+                    "batch.status_missing", fields=fields) if fields else ""
+            disk_label = self.i18n.tr("values." + item.label_dir,
+                                      fallback=item.label_dir)
+            values = [item.case_id, disk_label,
                       "{} / 4".format(inputs), status, "", "", "", ""]
             result_values = self._batch_result_rows.get(item.case_id)
             if result_values is not None:
@@ -1876,13 +2300,47 @@ class MainWindow(QMainWindow):
                     index, column, QTableWidgetItem(value))
             self._attach_batch_viewer(index, item.case_root)
 
+            result = next((r for r in self.batch_results
+                           if r.case_id == item.case_id), None)
+            if result is not None and \
+                    result.prediction != item.label_dir:
+                for column in (1, 6):
+                    table_item = self.batch_table.item(index, column)
+                    if table_item is not None:
+                        from PySide6.QtGui import QColor
+
+                        table_item.setBackground(
+                            QColor(COLORS["warning_soft"]))
+                        table_item.setToolTip(self.i18n.tr(
+                            "batch.label_mismatch"))
+        for stale_row in range(len(self._case_rows), self.batch_table.rowCount()):
+            stale = self.batch_table.cellWidget(stale_row, 7)
+            if stale is not None:
+                stale.hide()
+
     def _attach_batch_viewer(self, row: int, case_root: Path):
+        existing = self.batch_table.cellWidget(row, 7)
+        if existing is not None:
+            existing.deleteLater()
+            self.batch_table.setCellWidget(row, 7, None)
         button = QPushButton(self.i18n.tr("viewer.open"))
         button.setProperty("role", "small")
+        button.setFixedWidth(106)
+        button.setFixedHeight(28)
+        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         button.setToolTip(self.i18n.tr("viewer.open_hint"))
         button.clicked.connect(
             lambda _, root=Path(case_root): self._open_case_viewer(root))
-        self.batch_table.setCellWidget(row, 7, button)
+        holder = QWidget()
+        holder.setFixedWidth(self.batch_table.columnWidth(7))
+        holder.setFixedHeight(
+            self.batch_table.verticalHeader().defaultSectionSize())
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(4, 2, 4, 2)
+        holder_layout.setSpacing(0)
+        holder_layout.addWidget(button, 0, Qt.AlignCenter)
+        holder.show()
+        self.batch_table.setCellWidget(row, 7, holder)
 
     def _open_case_viewer(self, case_root: Path):
         from core.experiment_contract import REQUIRED_INPUT_GLOBS
@@ -1895,6 +2353,16 @@ class MainWindow(QMainWindow):
                 id=case_id))))
             if matches:
                 sources[key] = matches[0]
+        from core.preprocessing import find_source_inputs
+
+        raw = find_source_inputs(case_root, case_id)
+        for key, value in (("dce_raw", raw.dce_raw),
+                           ("dce_gtv", raw.dce_gtv),
+                           ("dce_gtvnd1", raw.dce_gtvnd1),
+                           ("mlo_gtv", raw.mlo_gtv),
+                           ("mlo_gtvnd1", raw.mlo_gtvnd1)):
+            if value is not None:
+                sources[key] = value
         if not sources:
             QMessageBox.information(
                 self, self.i18n.tr("common.notice"),
@@ -1993,11 +2461,14 @@ class MainWindow(QMainWindow):
         self._refresh_batch_actions()
         self.batch_progress.setFormat("%p%")
         self._set_status(self.status_label, "status.error")
+        display_message = localized_problem(self.i18n, message) \
+            if message.startswith(("source.", "prepare.", "shape:")) \
+            else message
         if message == "error.no_checkpoints":
             self._set_status(self.run_log, "error.no_checkpoints")
         else:
             self._set_status(self.run_log, "error.raw_detail",
-                             detail=message)
+                             detail=display_message)
         self._dispose_active_thread()
         QMessageBox.critical(
             self, self.i18n.tr("common.error"), self.run_log.text())
@@ -2016,3 +2487,18 @@ class MainWindow(QMainWindow):
             thread.wait()
         thread.deleteLater()
         self._active_thread = None
+
+    def _dispose_prepare_thread(self):
+        thread = self._prepare_thread
+        if thread is None:
+            return
+        try:
+            thread.progress_text.disconnect()
+            thread.finished_ok.disconnect()
+            thread.failed.disconnect()
+        except RuntimeError:
+            pass
+        if thread.isRunning():
+            thread.wait()
+        thread.deleteLater()
+        self._prepare_thread = None

@@ -81,11 +81,13 @@ def experiment_tree_description() -> str:
         "└── MRMG/\n"
         "    └── <Label>/\n"
         "        └── <CaseID>/\n"
-        "            ├── <CaseID>_DCE_N4.nii[.gz]\n"
-        "            ├── <CaseID>_DCE_decay1.nii[.gz]\n"
+        "            ├── <CaseID>_DCE_N4.nii[.gz] (or <CaseID>_DCE.nii[.gz])\n"
+        "            ├── <CaseID>_DCE_GTV.nii[.gz]\n"
+        "            ├── <CaseID>_DCE_GTVnd1.nii[.gz]\n"
         "            └── MG/\n"
         "                ├── *<CaseID>*_MLO.nii[.gz]\n"
-        "                └── *<CaseID>*_MLO_decay1.nii[.gz]"
+        "                ├── *<CaseID>*_MLO_GTV.nii[.gz]\n"
+        "                └── *<CaseID>*_MLO_GTVnd1.nii[.gz]"
     )
 
 
@@ -102,8 +104,23 @@ def localized_problem(i18n, problem: str) -> str:
         "DCE_decay1": "inputs.dce_decay1",
         "MLO": "inputs.mlo",
         "MLO_decay1": "inputs.mlo_decay1",
+        "source.dce": "source.dce",
+        "source.dce_gtv": "source.dce_gtv",
+        "source.mlo": "source.mlo",
+        "source.mlo_gtv": "source.mlo_gtv",
+        "preprocess.prepare": "preprocess.prepare",
+        "prepare.incomplete": "prepare.incomplete",
+        "shape": "preprocess.error.shape",
     }
     key = keys.get(code)
     if not key:
         return problem
+    if code == "prepare.incomplete":
+        case_id, _, missing = detail.partition(":")
+        source_key = missing if missing.startswith("source.") \
+            else "source." + missing
+        return i18n.tr(key, detail=case_id,
+                       names=i18n.tr(source_key, fallback=missing))
+    if detail and key == "preprocess.error.shape":
+        return i18n.tr(key, names=detail.replace(":", " / "))
     return i18n.tr(key, detail=detail) if detail else i18n.tr(key)

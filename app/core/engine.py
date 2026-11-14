@@ -45,6 +45,11 @@ class PatientCase:
     label_dir: str  # "Positive" / "Negative" as on disk; drives path layout only
     case_root: Path  # directory containing the NIfTI files (+ MG subdir)
     table_row: dict = field(default_factory=dict)  # CP.xlsx row for this ID
+    clinical_table: Optional[Path] = None  # staged workbook with derived cells
+    dce_n4: Optional[Path] = None
+    dce_decay: Optional[Path] = None
+    mlo: Optional[Path] = None
+    mlo_decay: Optional[Path] = None
 
 
 @dataclass
@@ -178,7 +183,23 @@ def build_checkpoint_store(paths: list[Path], target: Path) -> dict:
 def validate_case(case: PatientCase) -> list[str]:
     """Return human-readable problems; empty list means the case is runnable."""
     problems = []
+    explicit = {
+        "DCE_N4": getattr(case, "dce_n4", None),
+        "DCE_decay1": getattr(case, "dce_decay", None),
+        "MLO": getattr(case, "mlo", None),
+        "MLO_decay1": getattr(case, "mlo_decay", None),
+    }
+    from .preprocessing import derivable_products
+
+    derivable = set(derivable_products(case.case_root, case.case_id))
     for name, pattern in REQUIRED_INPUT_GLOBS:
+        path = explicit.get(name)
+        if path is not None:
+            if not Path(path).is_file():
+                problems.append(name)
+            continue
+        if name in derivable:
+            continue
         search_root = case.case_root / "MG" \
             if pattern.startswith("MG/") else case.case_root
         relative = pattern[3:] if pattern.startswith("MG/") else pattern
@@ -224,6 +245,14 @@ def discover_cases(data_root: Path,
                 label_dir=label,
                 case_root=case_dir,
                 table_row=row_matches.iloc[0].to_dict(),
+                dce_n4=find_case_nifti(case_dir, "{}_DCE_N4.nii*".format(
+                    case_dir.name)),
+                dce_decay=find_case_nifti(
+                    case_dir, "{}_DCE_decay1.nii*".format(case_dir.name)),
+                mlo=None,
+                mlo_decay=find_case_nifti(
+                    case_dir / "MG",
+                    "*{}_*MLO_decay1.nii*".format(case_dir.name)),
             ))
     if only_case and not cases:
         problems.append("case-not-found:{}".format(only_case))
@@ -459,8 +488,33 @@ class InferenceEngine:
                           "{}_MLO_decay1.nii.gz", Path("MG")),
         }
         pattern, fallback_name, subdir = patterns[kind]
-        source = find_case_nifti(case.case_root / subdir,
-                                 pattern.format(id=case.case_id))
+        explicit = {
+            "dce": getattr(case, "dce_n4", None),
+            "dce_decay": getattr(case, "dce_decay", None),
+            "mlo": getattr(case, "mlo", None),
+            "mlo_decay": getattr(case, "mlo_decay", None),
+        }.get(kind)
+        source = Path(explicit) if explicit is not None else None
+        if source is None and kind == "mlo":
+            from .preprocessing import find_mlo_image
+
+            source = find_mlo_image(case.case_root, case.case_id)
+        if source is None and kind == "mlo_decay":
+            source = find_case_nifti(
+                case.case_root / "MG",
+                "*{}_*MLO_decay1.nii*".format(case.case_id))
+        if source is None:
+            candidates = sorted((case.case_root / subdir).glob(
+                pattern.format(id=case.case_id)))
+            if kind == "mlo":
+                from .preprocessing import find_mlo_image  # noqa: F401
+
+                candidates = [
+                    path for path in candidates
+                    if "_GTV" not in path.name and
+                    "_decay" not in path.name
+                ]
+            source = candidates[0] if candidates else None
         if source is None:
             raise FileNotFoundError("{}: {}".format(kind, case.case_id))
         self._link_or_copy(source, target / subdir /
@@ -483,7 +537,15 @@ class InferenceEngine:
             target.mkdir(parents=True)
             for kind in ("dce", "dce_decay", "mlo", "mlo_decay"):
                 self._stage_image(target, case, kind)
-        if table_df is None:
+        staged_workbooks = {
+            Path(getattr(case, "clinical_table", ""))
+            for case in cases
+            if getattr(case, "clinical_table", None)
+        }
+        if table_df is None and len(staged_workbooks) == 1:
+            table_df = pd.read_excel(
+                staged_workbooks.pop(), sheet_name="Sheet1", dtype={"ID": str})
+        elif table_df is None:
             rows = []
             for case in cases:
                 row = dict(case.table_row)
@@ -652,5 +714,14 @@ def scan_results_to_dataframe(results: list[ScanResult],
             else:
                 row["{}_P(neg)".format(name)] = ""
                 row["{}_P(pos)".format(name)] = ""
+        positive_votes = sum(
+            1 for probs in r.fold_probs.values()
+            if probs is not None and probs[1] > probs[0])
+        negative_votes = sum(
+            1 for probs in r.fold_probs.values()
+            if probs is not None and probs[1] <= probs[0])
+        row["Positive_folds"] = positive_votes
+        row["Negative_folds"] = negative_votes
+        row["Margin_from_0.5"] = round(abs(r.prob_pos - 0.5), 6)
         rows.append(row)
     return pd.DataFrame(rows)

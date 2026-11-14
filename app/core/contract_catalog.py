@@ -13,6 +13,7 @@ from .experiment_contract import (
     CLINICAL_COLUMNS, PATHOLOGY_COLUMNS, REQUIRED_INPUT_GLOBS,
     experiment_tree_is_valid, resolve_experiment_root,
 )
+from .preprocessing import derivable_products, source_problems
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,8 @@ class CatalogCase:
     label_dir: str
     case_root: Path
     missing: tuple[str, ...]
+    derivable: tuple[str, ...]
+    source_missing: tuple[str, ...]
 
 
 def _find(case_root: Path, pattern: str) -> bool:
@@ -53,7 +56,12 @@ def catalog_cases(data_root: str | Path,
             for name, pattern in REQUIRED_INPUT_GLOBS:
                 if not _find(case_dir, pattern.format(id=case_id)):
                     missing.append(name)
-            cases.append(CatalogCase(case_id, label, case_dir, tuple(missing)))
+            derived = tuple(name for name in missing
+                            if name in derivable_products(case_dir, case_id))
+            unresolved = tuple(name for name in missing if name not in derived)
+            cases.append(CatalogCase(
+                case_id, label, case_dir, tuple(unresolved),
+                derived, source_problems(case_dir, case_id)))
     if selected_case and not cases:
         problems.append("case-not-found:{}".format(selected_case))
     return cases, problems

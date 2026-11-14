@@ -7,21 +7,26 @@ from PySide6.QtGui import QColor, QFont, QPalette
 
 
 COLORS = {
-    "window": "#f4f6f7",
+    "window": "#f3f7f6",
     "surface": "#ffffff",
-    "surface_alt": "#eef2f3",
-    "ink": "#17232b",
-    "muted": "#586871",
-    "border": "#cbd5d9",
-    "accent": "#0c6d72",
-    "accent_hover": "#095a5f",
-    "accent_soft": "#dcecec",
-    "positive": "#9a3e32",
-    "negative": "#2d6b58",
+    "surface_alt": "#e9f1ef",
+    "ink": "#122a2c",
+    "muted": "#5c7072",
+    "border": "#c4d6d3",
+    "accent": "#006f6a",
+    "accent_hover": "#005852",
+    "accent_soft": "#d9eeea",
+    "accent_wash": "#f0f8f6",
+    "positive": "#a84235",
+    "negative": "#276b55",
+    "rose": "#c05263",
+    "blue": "#2b6e8f",
+    "gold": "#b27a2a",
     "warning": "#8b5b18",
-    "disabled": "#e4e9eb",
-    "tree": "#17232b",
-    "tree_text": "#dcecec",
+    "warning_soft": "#fbf2df",
+    "disabled": "#e6eceb",
+    "tree": "#112c2d",
+    "tree_text": "#dceeea",
 }
 
 
@@ -69,33 +74,80 @@ def stylesheet() -> str:
     QLabel[role="section"] {{
         font-size: 12pt;
         font-weight: 600;
+        color: {COLORS['ink']};
     }}
     QLabel[role="caption"] {{
         color: {COLORS['muted']};
         font-size: 9pt;
+    }}
+    QLabel[role="result_note"] {{
+        background: {COLORS['accent_wash']};
+        border: 1px solid {COLORS['border']};
+        border-left: 3px solid {COLORS['gold']};
+        border-radius: 5px;
+        padding: 9px 12px;
+        color: {COLORS['ink']};
     }}
     QLabel[role="metric"] {{
         font-size: 24pt;
         font-weight: 600;
     }}
     QLabel[role="probability"] {{
-        font-size: 26pt;
+        font-size: 22pt;
         font-weight: 600;
         color: {COLORS['accent']};
     }}
     QFrame[role="panel"] {{
         background: {COLORS['surface']};
         border: 1px solid {COLORS['border']};
+        border-radius: 8px;
+    }}
+    QFrame[role="subpanel"] {{
+        background: {COLORS['accent_wash']};
+        border: 1px solid {COLORS['border']};
         border-radius: 6px;
     }}
     QFrame[role="rail"] {{
-        background: {COLORS['surface']};
+        background: {COLORS['tree']};
         border-right: 1px solid {COLORS['border']};
     }}
-    QFrame[role="header"] {{
-        background: {COLORS['surface']};
-        border-bottom: 1px solid {COLORS['border']};
+    QFrame[role="rail"] QLabel {{
+        color: {COLORS['tree_text']};
     }}
+    QFrame[role="rail"] QPushButton {{
+        background: {COLORS['surface']};
+        color: {COLORS['ink']};
+    }}
+    QFrame[role="rail"] QPushButton[role="nav"] {{
+        background: transparent;
+        color: {COLORS['tree_text']};
+    }}
+    QFrame[role="rail"] QPushButton[role="nav"]:checked {{
+        background: #1d4848;
+        color: #ffffff;
+    }}
+    QFrame[role="header"] {{
+        background: {COLORS['tree']};
+        border-bottom: 1px solid {COLORS['border']};
+        border-bottom: 3px solid {COLORS['gold']};
+    }}
+    QFrame[role="header"] QLabel {{
+        color: {COLORS['tree_text']};
+    }}
+    QFrame[role="header"] QPushButton {{
+        background: transparent;
+        color: {COLORS['tree_text']};
+        border: 1px solid #416763;
+    }}
+    QFrame[role="header"] QPushButton:hover {{
+        background: rgba(255, 255, 255, 0.12);
+        border-color: {COLORS['tree_text']};
+    }}
+    QPushButton[role="header_tool"] {{
+        min-height: 34px;
+        padding: 0px;
+    }}
+    QPushButton[role="header_tool"]::menu-indicator {{ image: none; }}
     QFrame[role="divider"] {{
         color: {COLORS['border']};
     }}
@@ -116,7 +168,7 @@ def stylesheet() -> str:
     QToolButton {{
         border: 0px;
         border-radius: 4px;
-        color: {COLORS['tree_text']};
+        color: {COLORS['ink']};
         min-width: 28px;
         min-height: 26px;
     }}
@@ -125,12 +177,16 @@ def stylesheet() -> str:
         background: {COLORS['surface']};
         border: 1px solid {COLORS['border']};
         border-radius: 5px;
-        min-height: 30px;
-        padding: 5px 12px;
+        min-height: 34px;
+        padding: 6px 14px 6px 11px;
         color: {COLORS['ink']};
+        font-weight: 500;
     }}
-    QPushButton:hover {{ background: {COLORS['surface_alt']}; }}
-    QPushButton:pressed {{ background: {COLORS['accent_soft']}; }}
+    QPushButton:hover {{
+        background: {COLORS['accent_soft']};
+        border-color: {COLORS['accent']};
+    }}
+    QPushButton:pressed {{ background: #c9e6e0; }}
     QPushButton:focus-visible {{ border: 2px solid {COLORS['accent']}; }}
     QPushButton:disabled {{
         color: {COLORS['muted']};
@@ -140,7 +196,7 @@ def stylesheet() -> str:
         background: {COLORS['accent']};
         color: #ffffff;
         border-color: {COLORS['accent']};
-        font-weight: 600;
+        font-weight: 650;
     }}
     QPushButton[role="primary"]:hover {{ background: {COLORS['accent_hover']}; }}
     QPushButton[role="primary"]:disabled {{
@@ -148,20 +204,39 @@ def stylesheet() -> str:
         color: {COLORS['muted']};
         border-color: {COLORS['border']};
     }}
+    QPushButton[role="primary"] {{ border-bottom: 2px solid {COLORS['accent_hover']}; }}
     QPushButton[role="nav"] {{
         text-align: left;
         border: 0px;
-        border-radius: 5px;
-        padding: 9px 12px;
-        min-height: 38px;
+        border-radius: 6px;
+        padding: 10px 14px;
+        min-height: 40px;
         font-size: 10pt;
+        color: {COLORS['tree_text']};
     }}
+    QPushButton[role="nav"]:hover {{ background: rgba(255, 255, 255, 0.10); }}
     QPushButton[role="nav"]:checked {{
-        background: {COLORS['accent_soft']};
+        background: #1d4848;
+        color: #ffffff;
+        font-weight: 600;
+        border-left: 3px solid {COLORS['gold']};
+        padding-left: 11px;
+    }}
+    QPushButton[role="subtle"] {{
+        background: {COLORS['accent_wash']};
+        border-color: {COLORS['accent_soft']};
         color: {COLORS['accent_hover']};
         font-weight: 600;
-        border-left: 3px solid {COLORS['accent']};
-        padding-left: 9px;
+    }}
+    QPushButton[role="subtle"]:hover {{
+        background: {COLORS['accent_soft']};
+        border-color: {COLORS['accent']};
+    }}
+    QPushButton[role="small"] {{
+        min-height: 28px;
+        padding: 4px 8px 4px 7px;
+        font-size: 9pt;
+        border-radius: 5px;
     }}
     QLineEdit, QComboBox, QTextEdit, QSpinBox, QDoubleSpinBox {{
         background: {COLORS['surface']};
@@ -197,6 +272,16 @@ def stylesheet() -> str:
         border-radius: 4px;
         margin: 1px;
     }}
+    QTableWidget::item {{
+        padding: 4px 6px;
+    }}
+    QTableWidget {{
+        gridline-color: #dae5e2;
+    }}
+    QTableWidget::item:selected {{
+        background: {COLORS['accent_soft']};
+        color: {COLORS['ink']};
+    }}
     QTableWidget, QTableView {{
         background: {COLORS['surface']};
         border: 1px solid {COLORS['border']};
@@ -209,7 +294,7 @@ def stylesheet() -> str:
         background: {COLORS['surface_alt']};
         border: 0px;
         border-bottom: 1px solid {COLORS['border']};
-        padding: 7px;
+        padding: 9px 8px;
         font-weight: 600;
     }}
     QTabWidget::pane {{ border: 0px; }}

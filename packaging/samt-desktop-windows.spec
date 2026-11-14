@@ -17,9 +17,10 @@ a = Analysis(
     ],
     hiddenimports=[
         "monai", "monai.transforms", "monai.data",
-        "pretrainedmodels", "SimpleITK", "skimage", "openpyxl", "six",
+        "pretrainedmodels", "SimpleITK", "nibabel", "scipy", "skimage",
+        "openpyxl", "six",
         "torchvision", "torchvision.transforms", "PIL", "PIL.Image",
-        "ui.main_window", "ui.theme", "core.engine",
+        "ui.main_window", "ui.theme", "core.engine", "core.preprocessing",
         # samt_core's flat imports (from Nii_utils import ...) resolve as
         # top-level modules at runtime via sys.path injection, so they must
         # be collected as top-level modules too.

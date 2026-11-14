@@ -17,9 +17,10 @@ a = Analysis(
     ],
     hiddenimports=[
         "monai", "monai.transforms", "monai.data",
-        "pretrainedmodels", "SimpleITK", "skimage", "openpyxl", "six",
+        "pretrainedmodels", "SimpleITK", "nibabel", "scipy", "skimage",
+        "openpyxl", "six",
         "torchvision", "torchvision.transforms", "PIL", "PIL.Image",
-        "ui.main_window", "ui.theme", "core.engine",
+        "ui.main_window", "ui.theme", "core.engine", "core.preprocessing",
         # samt_core's flat imports (from Nii_utils import ...) resolve as
         # top-level modules at runtime via sys.path injection, so they must
         # be collected as top-level modules too.
@@ -56,14 +57,14 @@ app = BUNDLE(
     name="SAMT-Desktop.app",
     icon=None,
     bundle_identifier="com.samt.desktop.research",
-    version="1.3.2",
+    version="1.4.0",
     info_plist={
         "CFBundleName": "SAMT Desktop",
         "CFBundleDisplayName": "SAMT Desktop",
         "CFBundleExecutable": "SAMT-Desktop",
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "1.3.2",
-        "CFBundleVersion": "1.3.2",
+        "CFBundleShortVersionString": "1.4.0",
+        "CFBundleVersion": "1.4.0",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "LSBackgroundOnly": False,

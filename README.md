@@ -4,6 +4,16 @@ SAMT 前哨淋巴结阳性乳腺癌腋窝非前哨淋巴结转移智能预测系
 
 **Research use only. Not for clinical decision making.**
 
+## v1.4.0
+
+This release adds source-image preparation, six-decimal borderline-result reporting, a blank default clinical form, and a restyled workbench. The network, ten-checkpoint ensemble, and supplied-input inference probabilities are unchanged.
+
+- A case folder can start with `DCE_N4` or raw DCE, paired DCE GTV/GTVnd1 contours, MLO, and paired MLO GTV/GTVnd1 contours. Existing `DCE_N4` files are used byte-for-byte. The workbench derives both `decay1` masks, including trailing-singleton-plane MLO contours, and derives the lowest-layer ALN diameter into a staged copy of `CP.xlsx`; a missing N4 image is generated with the exact `Nii_utils.N4BiasFieldCorrection` filter. The source workbook is never modified.
+- Because the supplied sample `*_DCE_N4.nii.gz` files are byte-different but voxel-identical to their raw DCE counterparts, regenerating N4 for those samples is not numerically equivalent to reusing the supplied files. Keep the supplied `DCE_N4` inputs when reproducing the published probabilities. With supplied products reused, the CPU reference returns `case1 P(pos)=0.508991314` and `case2 P(pos)=0.813457018`.
+- Borderline ensemble results retain six decimals, show `50.8991%`, the ten-checkpoint vote split, and the exact margin from 0.5. Exported CSV includes `Positive_folds`, `Negative_folds`, and `Margin_from_0.5`.
+- Single-case clinical and pathology fields all start empty. Selecting a case source folder fills only the derived ALN diameter; importing a clinical table remains an explicit user action.
+- N4/decay preparation runs off the UI thread with localized phase messages. The batch result table has a fixed-width image-viewer column and a visible critical-result note.
+
 ## v1.3.2
 
 This release completes the batch workflow and adds a read-only image viewer without changing preprocessing, the network, the ten-checkpoint ensemble, or prediction probabilities.
@@ -40,6 +50,7 @@ This release keeps the original experiment logic and ten-checkpoint ensemble whi
 - `app/core/samt_core/` — vendored research code (see ADR 0003: fidelity over refactor)
 - `app/core/engine.py` — staging + inference bridge
 - `app/core/clinical_table.py` — CP.xlsx matching without feature re-encoding
+- `app/core/preprocessing.py` — source-data preparation and offline product derivation
 - `app/ui/main_window.py` — PySide6 research workbench
 - `app/ui/theme.py` — cross-platform Qt design tokens
 - `app/locales/` — zh-CN / en-US JSON catalogs
@@ -59,7 +70,7 @@ pathology_pretrain_fold{1..5}_best_AUC_val.pth
 pathology_pretrain_fold{1..5}_best_ACC_val.pth
 ```
 
-They are copied from the original experiment package and are intentionally not tracked in Git. CI downloads them from the private `checkpoints-v1` release before running tests and PyInstaller.
+They are copied from the original experiment package and are intentionally not tracked in Git. CI downloads them from the repository's `checkpoints-v1` release before running tests and PyInstaller.
 
 ## Verification
 
@@ -68,7 +79,7 @@ python -m pytest tests -q
 QT_QPA_PLATFORM=offscreen python app/main.py
 ```
 
-Use any study root with this generic structure. All root, disk-label, and case names are arbitrary:
+Use any study root with this source-data structure. All root, disk-label, and case names are arbitrary. Existing model products always take priority; the two `decay1` masks are generated automatically:
 
 ```text
 StudyRoot/
@@ -76,11 +87,13 @@ StudyRoot/
 └── MRMG/
     └── <Label>/
         └── <CaseID>/
-            ├── <CaseID>_DCE_N4.nii[.gz]
-            ├── <CaseID>_DCE_decay1.nii[.gz]
+            ├── <CaseID>_DCE_N4.nii[.gz]  (or <CaseID>_DCE.nii[.gz])
+            ├── <CaseID>_DCE_GTV.nii[.gz]
+            ├── <CaseID>_DCE_GTVnd1.nii[.gz]
             └── MG/
                 ├── *<CaseID>*_MLO.nii[.gz]
-                └── *<CaseID>*_MLO_decay1.nii[.gz]
+                ├── *<CaseID>*_MLO_GTV.nii[.gz]
+                └── *<CaseID>*_MLO_GTVnd1.nii[.gz]
 ```
 
 To rebuild and verify the lossless checkpoint store locally:
