@@ -144,6 +144,7 @@ def test_batch_headers_fit_their_columns_at_minimum_width(
     QApplication.processEvents()
 
     header = window.batch_table.horizontalHeader()
+    assert header.sectionResizeMode(3) == header.ResizeMode.Fixed
     for column in range(window.batch_table.columnCount()):
         text = window.batch_table.horizontalHeaderItem(column).text()
         required = header.fontMetrics().horizontalAdvance(text) + 28

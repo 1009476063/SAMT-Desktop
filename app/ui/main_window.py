@@ -1497,10 +1497,8 @@ class MainWindow(QMainWindow):
             QHeaderView.Fixed)
         self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         batch_header = self.batch_table.horizontalHeader()
-        batch_header.setSectionResizeMode(QHeaderView.Interactive)
-        batch_header.setSectionResizeMode(3, QHeaderView.Stretch)
-        batch_header.setSectionResizeMode(7, QHeaderView.Fixed)
-        batch_header.setMinimumSectionSize(64)
+        batch_header.setSectionResizeMode(QHeaderView.Fixed)
+        batch_header.setMinimumSectionSize(48)
         self._fit_batch_columns()
         self.batch_table.setAlternatingRowColors(True)
         self.batch_table.setMinimumHeight(180)
@@ -3223,30 +3221,40 @@ class MainWindow(QMainWindow):
                 self._fit_viewer_cell(holder, button)
 
     def _fit_batch_columns(self):
-        """Allocate fixed columns from the active platform's font metrics."""
+        """Scale every fixed column to the active platform's font metrics."""
         if not hasattr(self, "batch_table"):
             return
         header = self.batch_table.horizontalHeader()
         metrics = header.fontMetrics()
         padding = 28
-        minimums = []
+        minimums = [64] * self.batch_table.columnCount()
+        minimums[0] = 96
+        minimums[1] = 96
+        minimums[2] = 124
+        minimums[4] = 120
+        minimums[5] = 120
+        minimums[6] = 84
+        minimums[7] = 96
         for column in range(self.batch_table.columnCount()):
             item = self.batch_table.horizontalHeaderItem(column)
-            minimums.append(
+            minimums[column] = max(
+                minimums[column],
                 metrics.horizontalAdvance(item.text()) + padding)
-        widths = [
-            max(96, minimums[0]),
-            max(96, minimums[1]),
-            max(124, minimums[2]),
-            142,
-            max(120, minimums[4]),
-            max(120, minimums[5]),
-            max(84, minimums[6]),
-            max(96, minimums[7]),
-        ]
-        for column in (0, 1, 2, 4, 5, 6):
-            self.batch_table.setColumnWidth(column, widths[column])
-        self.batch_table.setColumnWidth(7, widths[7])
+        total = sum(minimums)
+        available = max(0, self.batch_table.viewport().width())
+        if total < available:
+            remainder = available - total
+            weights = (1, 1, 1, 3, 1, 1, 1, 1)
+            weight_total = sum(weights)
+            extra = [remainder * weight // weight_total
+                     for weight in weights]
+            extra[-1] += remainder - sum(extra)
+            minimums = [width + add
+                        for width, add in zip(minimums, extra)]
+        for column, width in enumerate(minimums):
+            self.batch_table.setColumnWidth(column, width)
+        self.batch_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded if total > available else Qt.ScrollBarAlwaysOff)
         self._fit_batch_buttons()
 
     def _fit_viewer_buttons(self):
